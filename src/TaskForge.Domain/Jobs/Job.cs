@@ -36,4 +36,65 @@ public sealed class Job
     public DateTimeOffset? LeaseExpiresAtUtc { get; private set; }
     public string? LastError { get; private set; }
     public long Version { get; private set; }
+
+    public void Queue(DateTimeOffset now)
+    {
+        if (Status != JobStatus.Pending)
+        {
+            throw new InvalidOperationException("Only a pending job can be queued.");
+        }
+
+        Status = JobStatus.Queued;
+        QueuedAtUtc = now;
+        Touch(now);
+    }
+
+    public void StartProcessing(
+        string workerId,
+        DateTimeOffset leaseExpiresAtUtc,
+        DateTimeOffset now)
+    {
+        if (Status != JobStatus.Queued)
+        {
+            throw new InvalidOperationException("Only a queued job can start processing.");
+        }
+
+        if (string.IsNullOrWhiteSpace(workerId))
+        {
+            throw new ArgumentException("A worker ID is required.", nameof(workerId));
+        }
+
+        if (leaseExpiresAtUtc <= now)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(leaseExpiresAtUtc),
+                "The lease must expire in the future.");
+        }
+
+        Status = JobStatus.Processing;
+        OwningWorkerId = workerId;
+        LeaseExpiresAtUtc = leaseExpiresAtUtc;
+        StartedAtUtc = now;
+        Touch(now);
+    }
+
+    public void Complete(DateTimeOffset now)
+    {
+        if (Status != JobStatus.Processing)
+        {
+            throw new InvalidOperationException("Only a processing job can be completed.");
+        }
+
+        Status = JobStatus.Completed;
+        CompletedAtUtc = now;
+        OwningWorkerId = null;
+        LeaseExpiresAtUtc = null;
+        Touch(now);
+    }
+
+    private void Touch(DateTimeOffset now)
+    {
+        UpdatedAtUtc = now;
+        Version++;
+    }
 }
