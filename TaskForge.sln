@@ -9,6 +9,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaskForge.Domain", "src\Tas
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaskForge.Api", "src\TaskForge.Api\TaskForge.Api.csproj", "{CF3778F4-8100-4242-89C7-9C5419327552}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaskForge.UnitTests", "tests\TaskForge.UnitTests\TaskForge.UnitTests.csproj", "{3EE20BF7-2182-48C9-B9AA-00350D067155}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -43,6 +47,18 @@ Global
 		{CF3778F4-8100-4242-89C7-9C5419327552}.Release|x64.Build.0 = Release|Any CPU
 		{CF3778F4-8100-4242-89C7-9C5419327552}.Release|x86.ActiveCfg = Release|Any CPU
 		{CF3778F4-8100-4242-89C7-9C5419327552}.Release|x86.Build.0 = Release|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Debug|x64.Build.0 = Debug|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Debug|x86.Build.0 = Debug|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Release|x64.ActiveCfg = Release|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Release|x64.Build.0 = Release|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Release|x86.ActiveCfg = Release|Any CPU
+		{3EE20BF7-2182-48C9-B9AA-00350D067155}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -50,5 +66,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{2589DCD8-AC08-4E34-A436-87DFAA4D4F8B} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{CF3778F4-8100-4242-89C7-9C5419327552} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{3EE20BF7-2182-48C9-B9AA-00350D067155} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal
