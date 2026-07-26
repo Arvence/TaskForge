@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\TaskForge.Domain\TaskForge.Domain.csproj" />
+    <ProjectReference Include="..\..\src\TaskForge.Infrastructure\TaskForge.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

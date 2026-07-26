@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TaskForge.Domain\TaskForge.Domain.csproj" />
+    <ProjectReference Include="..\TaskForge.Infrastructure\TaskForge.Infrastructure.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
