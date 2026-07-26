@@ -7,11 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.22" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\TaskForge.Application\TaskForge.Application.csproj" />
     <ProjectReference Include="..\TaskForge.Domain\TaskForge.Domain.csproj" />
   </ItemGroup>
 

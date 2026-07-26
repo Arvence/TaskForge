@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <ProjectReference Include="..\TaskForge.Application\TaskForge.Application.csproj" />
     <ProjectReference Include="..\TaskForge.Domain\TaskForge.Domain.csproj" />
     <ProjectReference Include="..\TaskForge.Infrastructure\TaskForge.Infrastructure.csproj" />
   </ItemGroup>

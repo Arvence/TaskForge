@@ -1,9 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using TaskForge.Application.Abstractions.Persistence;
 using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Infrastructure.Persistence;
 
-public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
+public sealed class SqliteJobStore(TaskForgeDbContext dbContext) : IJobRepository
 {
     public async Task AddAsync(Job job, CancellationToken cancellationToken = default)
     {
