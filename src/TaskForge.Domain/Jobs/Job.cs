@@ -85,11 +85,156 @@ public sealed class Job
             throw new InvalidOperationException("Only a processing job can be completed.");
         }
 
+        if (CancellationRequested)
+        {
+            throw new InvalidOperationException(
+                "A job with cancellation requested cannot be completed.");
+        }
+
         Status = JobStatus.Completed;
         CompletedAtUtc = now;
+        LastError = null;
+        NextRetryAtUtc = null;
+        ClearOwnership();
+        Touch(now);
+    }
+
+    public void Fail(
+        string error,
+        DateTimeOffset nextRetryAtUtc,
+        DateTimeOffset now)
+    {
+        EnsureProcessing();
+
+        if (CancellationRequested)
+        {
+            throw new InvalidOperationException(
+                "A job with cancellation requested cannot be retried.");
+        }
+
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            throw new ArgumentException("An error is required.", nameof(error));
+        }
+
+        if (nextRetryAtUtc <= now)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(nextRetryAtUtc),
+                "The next retry must be in the future.");
+        }
+
+        RetryCount++;
+        LastError = error;
+        ClearOwnership();
+
+        if (RetryCount <= MaxRetries)
+        {
+            Status = JobStatus.Retrying;
+            NextRetryAtUtc = nextRetryAtUtc;
+        }
+        else
+        {
+            Status = JobStatus.DeadLettered;
+            NextRetryAtUtc = null;
+        }
+
+        Touch(now);
+    }
+
+    public void QueueRetry(DateTimeOffset now)
+    {
+        if (Status != JobStatus.Retrying)
+        {
+            throw new InvalidOperationException("Only a retrying job can be queued.");
+        }
+
+        if (NextRetryAtUtc is null || NextRetryAtUtc > now)
+        {
+            throw new InvalidOperationException("The job retry is not due yet.");
+        }
+
+        Status = JobStatus.Queued;
+        QueuedAtUtc = now;
+        NextRetryAtUtc = null;
+        Touch(now);
+    }
+
+    public void RequestCancellation(DateTimeOffset now)
+    {
+        if (Status is JobStatus.Completed or JobStatus.DeadLettered or JobStatus.Cancelled)
+        {
+            throw new InvalidOperationException(
+                "A finished job cannot be cancelled.");
+        }
+
+        if (CancellationRequested)
+        {
+            return;
+        }
+
+        CancellationRequested = true;
+
+        if (Status is JobStatus.Pending or JobStatus.Queued or JobStatus.Retrying)
+        {
+            Status = JobStatus.Cancelled;
+            NextRetryAtUtc = null;
+            ClearOwnership();
+        }
+
+        Touch(now);
+    }
+
+    public void Cancel(DateTimeOffset now)
+    {
+        EnsureProcessing();
+
+        if (!CancellationRequested)
+        {
+            throw new InvalidOperationException(
+                "Cancellation must be requested before cancelling a processing job.");
+        }
+
+        Status = JobStatus.Cancelled;
+        NextRetryAtUtc = null;
+        ClearOwnership();
+        Touch(now);
+    }
+
+    public void DeadLetter(string error, DateTimeOffset now)
+    {
+        EnsureProcessing();
+
+        if (CancellationRequested)
+        {
+            throw new InvalidOperationException(
+                "A job with cancellation requested cannot be dead-lettered.");
+        }
+
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            throw new ArgumentException("An error is required.", nameof(error));
+        }
+
+        Status = JobStatus.DeadLettered;
+        LastError = error;
+        NextRetryAtUtc = null;
+        ClearOwnership();
+        Touch(now);
+    }
+
+    private void EnsureProcessing()
+    {
+        if (Status != JobStatus.Processing)
+        {
+            throw new InvalidOperationException("Only a processing job can be updated.");
+        }
+    }
+
+    private void ClearOwnership()
+    {
         OwningWorkerId = null;
         LeaseExpiresAtUtc = null;
-        Touch(now);
     }
 
     private void Touch(DateTimeOffset now)

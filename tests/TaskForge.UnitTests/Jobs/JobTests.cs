@@ -72,12 +72,105 @@ public sealed class JobTests
             () => job.StartProcessing("worker-01", now, now));
     }
 
-    private static Job CreateJob() => new(
+    [Fact]
+    public void Failed_job_is_scheduled_and_can_be_queued_for_retry()
+    {
+        Job job = CreateJob();
+        DateTimeOffset queuedAt = CreatedAt.AddSeconds(1);
+        DateTimeOffset startedAt = CreatedAt.AddSeconds(2);
+        DateTimeOffset failedAt = CreatedAt.AddSeconds(3);
+        DateTimeOffset retryAt = CreatedAt.AddSeconds(10);
+        job.Queue(queuedAt);
+        job.StartProcessing("worker-01", startedAt.AddMinutes(1), startedAt);
+
+        job.Fail("Temporary failure.", retryAt, failedAt);
+
+        Assert.Equal(JobStatus.Retrying, job.Status);
+        Assert.Equal(1, job.RetryCount);
+        Assert.Equal(retryAt, job.NextRetryAtUtc);
+        Assert.Equal("Temporary failure.", job.LastError);
+        Assert.Null(job.OwningWorkerId);
+        Assert.Null(job.LeaseExpiresAtUtc);
+
+        job.QueueRetry(retryAt);
+
+        Assert.Equal(JobStatus.Queued, job.Status);
+        Assert.Null(job.NextRetryAtUtc);
+    }
+
+    [Fact]
+    public void Failure_without_retry_budget_is_dead_lettered()
+    {
+        Job job = CreateJob(maxRetries: 0);
+        DateTimeOffset queuedAt = CreatedAt.AddSeconds(1);
+        DateTimeOffset startedAt = CreatedAt.AddSeconds(2);
+        job.Queue(queuedAt);
+        job.StartProcessing("worker-01", startedAt.AddMinutes(1), startedAt);
+
+        job.Fail(
+            "Permanent failure.",
+            CreatedAt.AddSeconds(10),
+            CreatedAt.AddSeconds(3));
+
+        Assert.Equal(JobStatus.DeadLettered, job.Status);
+        Assert.Equal(1, job.RetryCount);
+        Assert.Equal("Permanent failure.", job.LastError);
+        Assert.Null(job.NextRetryAtUtc);
+    }
+
+    [Fact]
+    public void Queued_job_is_cancelled_immediately()
+    {
+        Job job = CreateJob();
+        job.Queue(CreatedAt.AddSeconds(1));
+
+        job.RequestCancellation(CreatedAt.AddSeconds(2));
+
+        Assert.True(job.CancellationRequested);
+        Assert.Equal(JobStatus.Cancelled, job.Status);
+    }
+
+    [Fact]
+    public void Processing_job_is_cancelled_after_request()
+    {
+        Job job = CreateJob();
+        DateTimeOffset startedAt = CreatedAt.AddSeconds(2);
+        job.Queue(CreatedAt.AddSeconds(1));
+        job.StartProcessing("worker-01", startedAt.AddMinutes(1), startedAt);
+
+        job.RequestCancellation(CreatedAt.AddSeconds(3));
+
+        Assert.Equal(JobStatus.Processing, job.Status);
+        Assert.True(job.CancellationRequested);
+
+        job.Cancel(CreatedAt.AddSeconds(4));
+
+        Assert.Equal(JobStatus.Cancelled, job.Status);
+        Assert.Null(job.OwningWorkerId);
+        Assert.Null(job.LeaseExpiresAtUtc);
+    }
+
+    [Fact]
+    public void Processing_job_can_be_dead_lettered_immediately()
+    {
+        Job job = CreateJob();
+        DateTimeOffset startedAt = CreatedAt.AddSeconds(2);
+        job.Queue(CreatedAt.AddSeconds(1));
+        job.StartProcessing("worker-01", startedAt.AddMinutes(1), startedAt);
+
+        job.DeadLetter("No handler is registered.", CreatedAt.AddSeconds(3));
+
+        Assert.Equal(JobStatus.DeadLettered, job.Status);
+        Assert.Equal("No handler is registered.", job.LastError);
+        Assert.Null(job.OwningWorkerId);
+    }
+
+    private static Job CreateJob(int maxRetries = 3) => new(
         Guid.Parse("7c077bba-bab3-4e20-a47f-a0ec51838a18"),
         "generate-report",
         """{"reportName":"Monthly report"}""",
         JobPriority.High,
-        maxRetries: 3,
+        maxRetries,
         timeoutSeconds: 30,
         CreatedAt);
 }
