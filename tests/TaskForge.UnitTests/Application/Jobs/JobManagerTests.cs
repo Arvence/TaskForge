@@ -134,5 +134,28 @@ public sealed class JobManagerTests
             Guid id,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Jobs.SingleOrDefault(job => job.Id == id));
+
+        public Task<Job?> TryAcquireAsync(
+            Guid id,
+            string workerId,
+            DateTimeOffset leaseExpiresAtUtc,
+            DateTimeOffset now,
+            CancellationToken cancellationToken = default)
+        {
+            Job? job = Jobs.SingleOrDefault(candidate => candidate.Id == id);
+            if (job?.Status != JobStatus.Queued)
+            {
+                return Task.FromResult<Job?>(null);
+            }
+
+            job.StartProcessing(workerId, leaseExpiresAtUtc, now);
+            return Task.FromResult<Job?>(job);
+        }
+
+        public Task<bool> TryUpdateAsync(
+            Job job,
+            long expectedVersion,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
     }
 }

@@ -10,4 +10,16 @@ public interface IJobRepository
         CancellationToken cancellationToken = default);
 
     Task<Job?> FindAsync(Guid id, CancellationToken cancellationToken = default);
+
+    Task<Job?> TryAcquireAsync(
+        Guid id,
+        string workerId,
+        DateTimeOffset leaseExpiresAtUtc,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> TryUpdateAsync(
+        Job job,
+        long expectedVersion,
+        CancellationToken cancellationToken = default);
 }
