@@ -8,6 +8,9 @@ ASP.NET Core, SQLite, and .NET 8.
 - Job, job-attempt, and worker domain models
 - Application-layer `JobManager`
 - Job submission validation
+- Job failure, retry, cancellation, and dead-letter rules
+- Optimistic-concurrency job acquisition and updates
+- Job handler contract and a demonstration delay handler
 - SQLite persistence with EF Core
 - Durable job submission, listing, and lookup
 - Health endpoint
@@ -85,12 +88,27 @@ when the API starts.
 dotnet test TaskForge.sln
 ```
 
+## Minimal worker behavior
+
+The first worker implementation will:
+
+1. Read one queued job ID.
+2. Acquire the job using its version so only one worker can own it.
+3. Execute the handler registered for the job type.
+4. Respect the job timeout and cancellation request.
+5. Mark successful jobs as completed.
+6. Schedule failed jobs for retry or dead-letter them when retries are exhausted.
+7. Persist every state change.
+
+The initial worker will run inside the API process. Multi-host execution,
+distributed queues, and dynamic plugins are outside the current scope.
+
 ## Next steps
 
 - Database migrations
-- Priority queues
-- Background workers and job handlers
-- Retry, timeout, cancellation, and dead-letter workflows
+- Priority queue and background worker loop
+- Handler resolution and attempt recording
+- Retry scheduling, timeout propagation, and cancellation endpoint
 - Worker leases and abandoned-job recovery
 - Filtering and pagination
 - Integration tests
