@@ -4,7 +4,7 @@ public interface IJobHandler
 {
     string JobType { get; }
 
-    Task HandleAsync(
+    Task<string?> HandleAsync(
         string payloadJson,
         CancellationToken cancellationToken = default);
 }

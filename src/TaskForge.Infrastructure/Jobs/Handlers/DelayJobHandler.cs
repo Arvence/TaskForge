@@ -1,4 +1,5 @@
 using System.Text.Json;
+
 using TaskForge.Application.Abstractions.Execution;
 
 namespace TaskForge.Infrastructure.Jobs.Handlers;
@@ -11,7 +12,7 @@ public sealed class DelayJobHandler : IJobHandler
 
     public string JobType => "delay";
 
-    public async Task HandleAsync(
+    public async Task<string?> HandleAsync(
         string payloadJson,
         CancellationToken cancellationToken = default)
     {
@@ -38,6 +39,7 @@ public sealed class DelayJobHandler : IJobHandler
         }
 
         await Task.Delay(payload.DelayMilliseconds, cancellationToken);
+        return null;
     }
 
     private sealed record DelayJobPayload(int DelayMilliseconds);

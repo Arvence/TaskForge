@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+
 using TaskForge.Domain.Jobs;
 using TaskForge.Domain.Workers;
 
@@ -12,12 +13,15 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
     public DbSet<Job> Jobs => Set<Job>();
     public DbSet<JobAttempt> JobAttempts => Set<JobAttempt>();
     public DbSet<WorkerState> Workers => Set<WorkerState>();
+    internal DbSet<WorkerSettingsRecord> WorkerSettings =>
+        Set<WorkerSettingsRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfiguration(new JobConfiguration());
         modelBuilder.ApplyConfiguration(new JobAttemptConfiguration());
         modelBuilder.ApplyConfiguration(new WorkerStateConfiguration());
+        modelBuilder.ApplyConfiguration(new WorkerSettingsConfiguration());
     }
 
     private sealed class JobConfiguration : IEntityTypeConfiguration<Job>
@@ -31,9 +35,9 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
                 .HasMaxLength(100)
                 .IsRequired();
             builder.Property(job => job.PayloadJson).IsRequired();
-            builder.Property(job => job.Priority)
-                .HasConversion<string>()
-                .HasMaxLength(20);
+            builder.Property(job => job.IdempotencyKey).HasMaxLength(100);
+            builder.Property(job => job.ResultJson).HasMaxLength(4000);
+            builder.Property(job => job.Priority);
             builder.Property(job => job.Status)
                 .HasConversion<string>()
                 .HasMaxLength(20);
@@ -58,6 +62,7 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
             builder.HasIndex(job => new { job.Status, job.Priority, job.CreatedAtUtc });
             builder.HasIndex(job => job.NextRetryAtUtc);
             builder.HasIndex(job => job.LeaseExpiresAtUtc);
+            builder.HasIndex(job => job.IdempotencyKey).IsUnique();
         }
     }
 
@@ -110,6 +115,18 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
             builder.Property(worker => worker.Version).IsConcurrencyToken();
 
             builder.HasIndex(worker => worker.LastHeartbeatAtUtc);
+        }
+    }
+
+    private sealed class WorkerSettingsConfiguration
+        : IEntityTypeConfiguration<WorkerSettingsRecord>
+    {
+        public void Configure(EntityTypeBuilder<WorkerSettingsRecord> builder)
+        {
+            builder.ToTable("WorkerSettings");
+            builder.HasKey(settings => settings.Id);
+            builder.Property(settings => settings.UpdatedAtUtc)
+                .HasConversion<DateTimeOffsetToBinaryConverter>();
         }
     }
 }

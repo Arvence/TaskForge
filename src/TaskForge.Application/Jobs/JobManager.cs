@@ -13,16 +13,23 @@ public sealed class JobManager(
 {
     public async Task<Job> SubmitAsync(
         SubmitJobCommand command,
+        CancellationToken cancellationToken = default) =>
+        (await SubmitAsync(command, null, cancellationToken)).Job;
+
+    public async Task<JobSubmissionResult> SubmitAsync(
+        SubmitJobCommand command,
+        string? idempotencyKey,
         CancellationToken cancellationToken = default)
     {
         IReadOnlyDictionary<string, string[]> errors =
-            submitJobValidator.Validate(command);
+            submitJobValidator.Validate(command, idempotencyKey);
         if (errors.Count > 0)
         {
             throw new ApplicationValidationException(errors);
         }
 
         DateTimeOffset now = timeProvider.GetUtcNow();
+        string? normalizedIdempotencyKey = idempotencyKey?.Trim();
         Job job = new(
             Guid.NewGuid(),
             command.Type.Trim(),
@@ -30,12 +37,21 @@ public sealed class JobManager(
             command.Priority,
             command.MaxRetries,
             command.TimeoutSeconds,
-            now);
+            now,
+            normalizedIdempotencyKey);
 
         job.Queue(now);
-        await jobRepository.AddAsync(job, cancellationToken);
+        Job persistedJob = await jobRepository.AddOrGetExistingAsync(
+            job,
+            cancellationToken);
 
-        return job;
+        bool created = persistedJob.Id == job.Id;
+        if (!created && !HasSameSubmission(persistedJob, job))
+        {
+            throw new IdempotencyConflictException(normalizedIdempotencyKey!);
+        }
+
+        return new JobSubmissionResult(persistedJob, created);
     }
 
     public Task<IReadOnlyList<Job>> GetAllAsync(
@@ -46,4 +62,11 @@ public sealed class JobManager(
         Guid id,
         CancellationToken cancellationToken = default) =>
         jobRepository.FindAsync(id, cancellationToken);
+
+    private static bool HasSameSubmission(Job existing, Job candidate) =>
+        existing.Type == candidate.Type
+        && existing.PayloadJson == candidate.PayloadJson
+        && existing.Priority == candidate.Priority
+        && existing.MaxRetries == candidate.MaxRetries
+        && existing.TimeoutSeconds == candidate.TimeoutSeconds;
 }

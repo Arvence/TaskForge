@@ -109,6 +109,60 @@ public sealed class JobManagerTests
         Assert.Same(job, foundJob);
     }
 
+    [Fact]
+    public async Task Repeated_idempotency_key_returns_original_job()
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = new(
+            repository,
+            new SubmitJobValidator(),
+            new FixedTimeProvider(Now));
+        SubmitJobCommand command = new(
+            "delay",
+            """{"delayMilliseconds":1}""",
+            JobPriority.Normal,
+            MaxRetries: 1,
+            TimeoutSeconds: 5);
+
+        JobSubmissionResult first = await manager.SubmitAsync(
+            command,
+            "request-123");
+        JobSubmissionResult replay = await manager.SubmitAsync(
+            command,
+            "request-123");
+
+        Assert.True(first.Created);
+        Assert.False(replay.Created);
+        Assert.Same(first.Job, replay.Job);
+        Assert.Single(repository.Jobs);
+    }
+
+    [Fact]
+    public async Task Reused_key_with_different_job_is_rejected()
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = new(
+            repository,
+            new SubmitJobValidator(),
+            new FixedTimeProvider(Now));
+        SubmitJobCommand firstCommand = new(
+            "delay",
+            """{"delayMilliseconds":1}""",
+            JobPriority.Normal,
+            MaxRetries: 1,
+            TimeoutSeconds: 5);
+        SubmitJobCommand differentCommand = firstCommand with
+        {
+            PayloadJson = """{"delayMilliseconds":2}"""
+        };
+        await manager.SubmitAsync(firstCommand, "request-123");
+
+        await Assert.ThrowsAsync<IdempotencyConflictException>(
+            () => manager.SubmitAsync(
+                differentCommand,
+                "request-123"));
+    }
+
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
@@ -126,6 +180,24 @@ public sealed class JobManagerTests
             return Task.CompletedTask;
         }
 
+        public Task<Job> AddOrGetExistingAsync(
+            Job job,
+            CancellationToken cancellationToken = default)
+        {
+            Job? existing = job.IdempotencyKey is null
+                ? null
+                : Jobs.SingleOrDefault(
+                    candidate =>
+                        candidate.IdempotencyKey == job.IdempotencyKey);
+            if (existing is not null)
+            {
+                return Task.FromResult(existing);
+            }
+
+            Jobs.Add(job);
+            return Task.FromResult(job);
+        }
+
         public Task<IReadOnlyList<Job>> GetAllAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Job>>(Jobs);
@@ -134,6 +206,13 @@ public sealed class JobManagerTests
             Guid id,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Jobs.SingleOrDefault(job => job.Id == id));
+
+        public Task<Job?> FindByIdempotencyKeyAsync(
+            string idempotencyKey,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                Jobs.SingleOrDefault(
+                    job => job.IdempotencyKey == idempotencyKey));
 
         public Task<Job?> TryAcquireAsync(
             Guid id,

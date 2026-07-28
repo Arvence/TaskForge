@@ -4,11 +4,20 @@ public sealed class Job
 {
     private Job() { }
 
-    public Job(Guid id, string type, string payloadJson, JobPriority priority, int maxRetries, int timeoutSeconds, DateTimeOffset createdAtUtc)
+    public Job(
+        Guid id,
+        string type,
+        string payloadJson,
+        JobPriority priority,
+        int maxRetries,
+        int timeoutSeconds,
+        DateTimeOffset createdAtUtc,
+        string? idempotencyKey = null)
     {
         Id = id;
         Type = type;
         PayloadJson = payloadJson;
+        IdempotencyKey = idempotencyKey;
         Priority = priority;
         MaxRetries = maxRetries;
         TimeoutSeconds = timeoutSeconds;
@@ -20,6 +29,8 @@ public sealed class Job
     public Guid Id { get; private set; }
     public string Type { get; private set; } = string.Empty;
     public string PayloadJson { get; private set; } = string.Empty;
+    public string? IdempotencyKey { get; private set; }
+    public string? ResultJson { get; private set; }
     public JobPriority Priority { get; private set; }
     public JobStatus Status { get; private set; }
     public int MaxRetries { get; private set; }
@@ -78,7 +89,9 @@ public sealed class Job
         Touch(now);
     }
 
-    public void Complete(DateTimeOffset now)
+    public void Complete(DateTimeOffset now) => Complete(null, now);
+
+    public void Complete(string? resultJson, DateTimeOffset now)
     {
         if (Status != JobStatus.Processing)
         {
@@ -93,6 +106,7 @@ public sealed class Job
 
         Status = JobStatus.Completed;
         CompletedAtUtc = now;
+        ResultJson = resultJson;
         LastError = null;
         NextRetryAtUtc = null;
         ClearOwnership();
@@ -219,6 +233,32 @@ public sealed class Job
         Status = JobStatus.DeadLettered;
         LastError = error;
         NextRetryAtUtc = null;
+        ClearOwnership();
+        Touch(now);
+    }
+
+    public void RecoverExpiredLease(DateTimeOffset now)
+    {
+        EnsureProcessing();
+
+        if (LeaseExpiresAtUtc is null || LeaseExpiresAtUtc > now)
+        {
+            throw new InvalidOperationException(
+                "Only a job with an expired lease can be recovered.");
+        }
+
+        if (CancellationRequested)
+        {
+            Status = JobStatus.Cancelled;
+            NextRetryAtUtc = null;
+        }
+        else
+        {
+            Status = JobStatus.Queued;
+            QueuedAtUtc = now;
+            LastError = "The previous worker lease expired; the job was requeued.";
+        }
+
         ClearOwnership();
         Touch(now);
     }

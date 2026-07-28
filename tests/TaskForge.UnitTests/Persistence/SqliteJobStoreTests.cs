@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+
 using TaskForge.Domain.Jobs;
 using TaskForge.Infrastructure.Persistence;
 
@@ -165,6 +166,98 @@ public sealed class SqliteJobStoreTests
 
         Assert.True(firstUpdated);
         Assert.False(staleUpdated);
+    }
+
+    [Fact]
+    public async Task Next_job_is_acquired_by_priority_then_age()
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        DbContextOptions<TaskForgeDbContext> options =
+            new DbContextOptionsBuilder<TaskForgeDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+        DateTimeOffset now =
+            new(2026, 7, 20, 12, 10, 0, TimeSpan.Zero);
+        Job lowPriority = CreateJob(Guid.NewGuid(), now.AddMinutes(-2));
+        Job highPriority = new(
+            Guid.NewGuid(),
+            "delay",
+            """{"delayMilliseconds":1}""",
+            JobPriority.High,
+            maxRetries: 0,
+            timeoutSeconds: 5,
+            now.AddMinutes(-1));
+        highPriority.Queue(now.AddMinutes(-1));
+
+        await using (TaskForgeDbContext setupContext = new(options))
+        {
+            await setupContext.Database.EnsureCreatedAsync();
+            SqliteJobStore setupStore = new(setupContext);
+            await setupStore.AddAsync(lowPriority);
+            await setupStore.AddAsync(highPriority);
+        }
+
+        await using TaskForgeDbContext workerContext = new(options);
+        SqliteJobStore store = new(workerContext);
+        Job? acquired = await store.TryAcquireNextAsync(
+            "worker-01",
+            TimeSpan.FromSeconds(30),
+            now);
+
+        Assert.NotNull(acquired);
+        Assert.Equal(highPriority.Id, acquired.Id);
+        Assert.Equal(JobStatus.Processing, acquired.Status);
+    }
+
+    [Fact]
+    public async Task Idempotency_key_returns_the_original_job()
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        DbContextOptions<TaskForgeDbContext> options =
+            new DbContextOptionsBuilder<TaskForgeDbContext>()
+                .UseSqlite(connection)
+                .Options;
+        DateTimeOffset now =
+            new(2026, 7, 20, 12, 10, 0, TimeSpan.Zero);
+        Job original = new(
+            Guid.NewGuid(),
+            "delay",
+            """{"delayMilliseconds":1}""",
+            JobPriority.Normal,
+            maxRetries: 1,
+            timeoutSeconds: 5,
+            now,
+            idempotencyKey: "request-123");
+        original.Queue(now);
+
+        await using (TaskForgeDbContext firstContext = new(options))
+        {
+            await firstContext.Database.EnsureCreatedAsync();
+            await new SqliteJobStore(firstContext).AddOrGetExistingAsync(original);
+        }
+
+        Job duplicate = new(
+            Guid.NewGuid(),
+            original.Type,
+            original.PayloadJson,
+            original.Priority,
+            original.MaxRetries,
+            original.TimeoutSeconds,
+            now,
+            idempotencyKey: "request-123");
+        duplicate.Queue(now);
+        await using TaskForgeDbContext secondContext = new(options);
+
+        Job persisted = await new SqliteJobStore(secondContext)
+            .AddOrGetExistingAsync(duplicate);
+
+        Assert.Equal(original.Id, persisted.Id);
+        Assert.NotEqual(duplicate.Id, persisted.Id);
     }
 
     private static Job CreateJob(Guid id, DateTimeOffset createdAt)

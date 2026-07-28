@@ -1,4 +1,4 @@
-# TaskForge
+# TaskForge v1.0
 
 TaskForge is a backend-only background job processing project built with C#,
 ASP.NET Core, SQLite, and .NET 8.
@@ -11,6 +11,12 @@ ASP.NET Core, SQLite, and .NET 8.
 - Job failure, retry, cancellation, and dead-letter rules
 - Optimistic-concurrency job acquisition and updates
 - Job handler contract and a demonstration delay handler
+- Allowlisted outbound HTTP request jobs for external integrations
+- In-process `WorkerManager` with configurable parallel workers
+- Runtime worker scaling persisted in SQLite
+- Priority-first job acquisition, retries, timeouts, cancellation, and lease recovery
+- Idempotent submission through the `Idempotency-Key` header
+- OpenAPI JSON documentation
 - SQLite persistence with EF Core
 - Durable job submission, listing, and lookup
 - Health endpoint
@@ -22,6 +28,8 @@ ASP.NET Core, SQLite, and .NET 8.
 flowchart LR
     Client --> API[TaskForge.Api]
     API --> App[TaskForge.Application]
+    API --> WorkerManager
+    WorkerManager --> App
     App --> Domain[TaskForge.Domain]
     App --> Repository[IJobRepository]
     Repository --> Infrastructure[TaskForge.Infrastructure]
@@ -31,9 +39,9 @@ flowchart LR
 ### Projects
 
 - `TaskForge.Domain`: job and worker state and lifecycle rules
-- `TaskForge.Application`: job workflows, validation, and abstractions
+- `TaskForge.Application`: job workflows, validation, worker management, and abstractions
 - `TaskForge.Infrastructure`: EF Core mappings and SQLite persistence
-- `TaskForge.Api`: HTTP endpoints, contracts, configuration, and hosting
+- `TaskForge.Api`: HTTP endpoints, configuration, and hosting for the API and workers
 - `TaskForge.UnitTests`: domain, application, and persistence tests
 
 ## Requirements
@@ -55,9 +63,13 @@ created at `src/TaskForge.Api/data/taskforge.db`.
 
 ```text
 GET  /api/health
+GET  /openapi/v1.json
 POST /api/jobs
 GET  /api/jobs
 GET  /api/jobs/{id}
+POST /api/jobs/{id}/cancel
+GET  /api/workers
+PUT  /api/workers/count
 ```
 
 Submit a job:
@@ -65,16 +77,69 @@ Submit a job:
 ```bash
 curl -X POST http://localhost:5000/api/jobs \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: delay-example-001" \
   -d '{
-    "type": "generate-report",
+    "type": "delay",
     "priority": "High",
     "payload": {
-      "reportName": "Monthly Player Statistics"
+      "delayMilliseconds": 1000
     },
     "maxRetries": 3,
     "timeoutSeconds": 30
   }'
 ```
+
+Reusing the same idempotency key with the same submission returns the original
+job. Reusing it with different job properties returns `409 Conflict`.
+
+Cancel a queued or running job:
+
+```bash
+curl -X POST http://localhost:5000/api/jobs/JOB_ID/cancel
+```
+
+### HTTP request jobs
+
+An external project can submit an `http-request` job and let TaskForge perform
+the call asynchronously:
+
+```bash
+curl -X POST http://localhost:5000/api/jobs \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: notify-order-123" \
+  -d '{
+    "type": "http-request",
+    "priority": "Normal",
+    "payload": {
+      "url": "http://localhost:6000/hooks/orders",
+      "method": "POST",
+      "body": {
+        "orderId": 123,
+        "status": "Ready"
+      },
+      "headers": {
+        "X-TaskForge-Source": "orders"
+      }
+    },
+    "maxRetries": 3,
+    "timeoutSeconds": 30
+  }'
+```
+
+Supported methods are `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`. A `2xx`
+response completes the job and stores a compact result containing the HTTP
+status code; other responses follow the configured retry policy.
+
+Change the number of active workers:
+
+```bash
+curl -X PUT http://localhost:5000/api/workers/count \
+  -H "Content-Type: application/json" \
+  -d '{ "count": 4 }'
+```
+
+Worker count can be set from `0` to `8`; zero pauses processing, and the selected
+count is restored from SQLite after an application restart.
 
 ## Configuration
 
@@ -82,34 +147,75 @@ The SQLite connection string is configured in
 `src/TaskForge.Api/appsettings.json`. A missing database and schema are created
 when the API starts.
 
+Worker defaults are configured in the same file:
+
+```json
+{
+  "Worker": {
+    "Count": 1,
+    "PollIntervalMilliseconds": 500,
+    "RetryDelaySeconds": 5,
+    "LeaseGraceSeconds": 30
+  },
+  "HttpRequestJobs": {
+    "AllowedHosts": [
+      "localhost",
+      "127.0.0.1",
+      "api.example.com"
+    ]
+  }
+}
+```
+
+The configured count is used until a user changes it through the API; API
+changes are persisted in SQLite and take precedence on later starts.
+
+`http-request` jobs are sent only to exact host names in `AllowedHosts`.
+Redirects are not followed, which prevents a permitted URL from redirecting a
+worker to a host outside the allowlist. Job payloads and headers are returned by
+the job API, so do not place secrets in them.
+
+The generated OpenAPI document is always available at
+`http://localhost:5000/openapi/v1.json`.
+
+## External project usage
+
+TaskForge v1.0 is intended for server-to-server use on a trusted local or
+private network. An external project submits a supported job, saves the returned
+job ID, and polls `GET /api/jobs/{id}` until the status is `Completed`,
+`Cancelled`, or `DeadLettered`.
+
+TaskForge does not accept executable code from clients; it runs only handlers
+registered by the service. Version 1.0 includes `delay` and `http-request`.
+Authentication, distributed queues, plugins, and containers are intentionally
+outside this release.
+
 ## Testing
 
 ```bash
 dotnet test TaskForge.sln
 ```
 
-## Minimal worker behavior
+## Worker behavior
 
-The first worker implementation will:
+`WorkerManager` runs inside the API process and starts the requested number of
+worker loops. Each worker processes one job at a time using its own dependency
+injection scope. Workers select jobs by priority and age, acquire them using the
+job version, execute the matching handler, enforce timeouts, schedule retries,
+dead-letter terminal failures, and recover expired leases.
 
-1. Read one queued job ID.
-2. Acquire the job using its version so only one worker can own it.
-3. Execute the handler registered for the job type.
-4. Respect the job timeout and cancellation request.
-5. Mark successful jobs as completed.
-6. Schedule failed jobs for retry or dead-letter them when retries are exhausted.
-7. Persist every state change.
+Scaling down is graceful: a busy worker finishes its current job before it
+stops. Stopping the API also stops all workers; durable queued jobs resume when
+the API starts again.
 
-The initial worker will run inside the API process. Multi-host execution,
-distributed queues, and dynamic plugins are outside the current scope.
+Multi-host execution, distributed queues, and dynamic plugins are outside the
+current scope.
 
 ## Next steps
 
 - Database migrations
-- Priority queue and background worker loop
-- Handler resolution and attempt recording
-- Retry scheduling, timeout propagation, and cancellation endpoint
-- Worker leases and abandoned-job recovery
+- Attempt recording
 - Filtering and pagination
 - Integration tests
-- Swagger, metrics, and structured error middleware
+- Authentication for untrusted networks
+- Metrics and structured error middleware

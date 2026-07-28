@@ -1,11 +1,14 @@
 using System.Text.Json;
+
 using TaskForge.Application.Jobs.Models;
 
 namespace TaskForge.Application.Jobs.Validation;
 
 public sealed class SubmitJobValidator
 {
-    public IReadOnlyDictionary<string, string[]> Validate(SubmitJobCommand command)
+    public IReadOnlyDictionary<string, string[]> Validate(
+        SubmitJobCommand command,
+        string? idempotencyKey = null)
     {
         Dictionary<string, string[]> errors = [];
 
@@ -36,6 +39,16 @@ public sealed class SubmitJobValidator
         if (command.TimeoutSeconds is < 1 or > 3600)
         {
             errors["TimeoutSeconds"] = ["Timeout seconds must be between 1 and 3600."];
+        }
+
+        if (idempotencyKey is not null
+            && (string.IsNullOrWhiteSpace(idempotencyKey)
+                || idempotencyKey.Trim().Length > 100))
+        {
+            errors["Idempotency-Key"] =
+            [
+                "Idempotency key must contain between 1 and 100 characters."
+            ];
         }
 
         return errors;

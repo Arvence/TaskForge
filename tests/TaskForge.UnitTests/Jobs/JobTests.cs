@@ -165,6 +165,37 @@ public sealed class JobTests
         Assert.Null(job.OwningWorkerId);
     }
 
+    [Fact]
+    public void Job_with_expired_lease_is_requeued()
+    {
+        Job job = CreateJob();
+        DateTimeOffset startedAt = CreatedAt.AddSeconds(2);
+        DateTimeOffset leaseExpiresAt = startedAt.AddMinutes(1);
+        job.Queue(CreatedAt.AddSeconds(1));
+        job.StartProcessing("worker-01", leaseExpiresAt, startedAt);
+
+        job.RecoverExpiredLease(leaseExpiresAt);
+
+        Assert.Equal(JobStatus.Queued, job.Status);
+        Assert.Equal(leaseExpiresAt, job.QueuedAtUtc);
+        Assert.Null(job.OwningWorkerId);
+        Assert.Null(job.LeaseExpiresAtUtc);
+        Assert.Contains("lease expired", job.LastError);
+    }
+
+    [Fact]
+    public void Active_lease_cannot_be_recovered()
+    {
+        Job job = CreateJob();
+        DateTimeOffset startedAt = CreatedAt.AddSeconds(2);
+        DateTimeOffset leaseExpiresAt = startedAt.AddMinutes(1);
+        job.Queue(CreatedAt.AddSeconds(1));
+        job.StartProcessing("worker-01", leaseExpiresAt, startedAt);
+
+        Assert.Throws<InvalidOperationException>(
+            () => job.RecoverExpiredLease(leaseExpiresAt.AddTicks(-1)));
+    }
+
     private static Job CreateJob(int maxRetries = 3) => new(
         Guid.Parse("7c077bba-bab3-4e20-a47f-a0ec51838a18"),
         "generate-report",

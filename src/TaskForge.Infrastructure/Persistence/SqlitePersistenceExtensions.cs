@@ -1,6 +1,8 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+
+using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Abstractions.Persistence;
 
 namespace TaskForge.Infrastructure.Persistence;
@@ -41,7 +43,12 @@ public static class SqlitePersistenceExtensions
 
         services.AddDbContext<TaskForgeDbContext>(options =>
             options.UseSqlite(connectionStringBuilder.ConnectionString));
-        services.AddScoped<IJobRepository, SqliteJobStore>();
+        services.AddScoped<SqliteJobStore>();
+        services.AddScoped<IJobRepository>(
+            serviceProvider => serviceProvider.GetRequiredService<SqliteJobStore>());
+        services.AddScoped<IJobQueue>(
+            serviceProvider => serviceProvider.GetRequiredService<SqliteJobStore>());
+        services.AddScoped<IWorkerSettingsStore, SqliteWorkerSettingsStore>();
 
         return services;
     }
