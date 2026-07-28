@@ -56,8 +56,12 @@ dotnet build TaskForge.sln
 dotnet run --project src/TaskForge.Api
 ```
 
-The default launch profile listens on `http://localhost:5000`. The database is
+TaskForge listens on `http://localhost:8275` by default. The database is
 created at `src/TaskForge.Api/data/taskforge.db`.
+
+Port `8275` is memorable because `TASK` maps to `8275` on a telephone keypad.
+Deployments can override the address with `ASPNETCORE_URLS` or the `--urls`
+command-line option.
 
 ## API
 
@@ -75,7 +79,7 @@ PUT  /api/workers/count
 Submit a job:
 
 ```bash
-curl -X POST http://localhost:5000/api/jobs \
+curl -X POST http://localhost:8275/api/jobs \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: delay-example-001" \
   -d '{
@@ -95,7 +99,7 @@ job. Reusing it with different job properties returns `409 Conflict`.
 Cancel a queued or running job:
 
 ```bash
-curl -X POST http://localhost:5000/api/jobs/JOB_ID/cancel
+curl -X POST http://localhost:8275/api/jobs/JOB_ID/cancel
 ```
 
 ### HTTP request jobs
@@ -104,7 +108,7 @@ An external project can submit an `http-request` job and let TaskForge perform
 the call asynchronously:
 
 ```bash
-curl -X POST http://localhost:5000/api/jobs \
+curl -X POST http://localhost:8275/api/jobs \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: notify-order-123" \
   -d '{
@@ -133,7 +137,7 @@ status code; other responses follow the configured retry policy.
 Change the number of active workers:
 
 ```bash
-curl -X PUT http://localhost:5000/api/workers/count \
+curl -X PUT http://localhost:8275/api/workers/count \
   -H "Content-Type: application/json" \
   -d '{ "count": 4 }'
 ```
@@ -176,7 +180,7 @@ worker to a host outside the allowlist. Job payloads and headers are returned by
 the job API, so do not place secrets in them.
 
 The generated OpenAPI document is always available at
-`http://localhost:5000/openapi/v1.json`.
+`http://localhost:8275/openapi/v1.json`.
 
 ## External project usage
 
