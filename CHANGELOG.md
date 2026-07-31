@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Removed the demonstration `delay` job handler.
+- Added registered job-type and handler payload validation before queueing.
+
 ## 1.0.0 - 2026-07-28
 
 - Added durable SQLite-backed job submission and status APIs.

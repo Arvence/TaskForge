@@ -10,7 +10,7 @@ ASP.NET Core, SQLite, and .NET 8.
 - Job submission validation
 - Job failure, retry, cancellation, and dead-letter rules
 - Optimistic-concurrency job acquisition and updates
-- Job handler contract and a demonstration delay handler
+- Job handler contract
 - Allowlisted outbound HTTP request jobs for external integrations
 - In-process `WorkerManager` with configurable parallel workers
 - Runtime worker scaling persisted in SQLite
@@ -81,12 +81,13 @@ Submit a job:
 ```bash
 curl -X POST http://localhost:8275/api/jobs \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: delay-example-001" \
+  -H "Idempotency-Key: health-check-example-001" \
   -d '{
-    "type": "delay",
+    "type": "http-request",
     "priority": "High",
     "payload": {
-      "delayMilliseconds": 1000
+      "url": "http://localhost:8275/api/health",
+      "method": "GET"
     },
     "maxRetries": 3,
     "timeoutSeconds": 30
@@ -133,6 +134,8 @@ curl -X POST http://localhost:8275/api/jobs \
 Supported methods are `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`. A `2xx`
 response completes the job and stores a compact result containing the HTTP
 status code; other responses follow the configured retry policy.
+Unsupported job types and invalid HTTP request payloads return `400 Bad Request`
+and are not stored.
 
 Change the number of active workers:
 
@@ -190,7 +193,7 @@ job ID, and polls `GET /api/jobs/{id}` until the status is `Completed`,
 `Cancelled`, or `DeadLettered`.
 
 TaskForge does not accept executable code from clients; it runs only handlers
-registered by the service. Version 1.0 includes `delay` and `http-request`.
+registered by the service. The current service includes `http-request`.
 Authentication, distributed queues, plugins, and containers are intentionally
 outside this release.
 
