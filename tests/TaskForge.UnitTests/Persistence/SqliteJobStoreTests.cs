@@ -184,8 +184,8 @@ public sealed class SqliteJobStoreTests
         Job lowPriority = CreateJob(Guid.NewGuid(), now.AddMinutes(-2));
         Job highPriority = new(
             Guid.NewGuid(),
-            "delay",
-            """{"delayMilliseconds":1}""",
+            "example",
+            """{"value":1}""",
             JobPriority.High,
             maxRetries: 0,
             timeoutSeconds: 5,
@@ -226,8 +226,8 @@ public sealed class SqliteJobStoreTests
             new(2026, 7, 20, 12, 10, 0, TimeSpan.Zero);
         Job original = new(
             Guid.NewGuid(),
-            "delay",
-            """{"delayMilliseconds":1}""",
+            "example",
+            """{"value":1}""",
             JobPriority.Normal,
             maxRetries: 1,
             timeoutSeconds: 5,
