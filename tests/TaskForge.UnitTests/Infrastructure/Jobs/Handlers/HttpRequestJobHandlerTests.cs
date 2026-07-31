@@ -45,6 +45,52 @@ public sealed class HttpRequestJobHandlerTests
     }
 
     [Fact]
+    public void Valid_payload_is_accepted_without_sending()
+    {
+        StubHttpMessageHandler messageHandler = new(
+            new HttpResponseMessage(HttpStatusCode.OK));
+        HttpRequestJobHandler handler = CreateHandler(
+            messageHandler,
+            ["api.example.test"]);
+
+        string? error = handler.ValidatePayload(
+            """
+            {
+              "url": "https://api.example.test/tasks",
+              "method": "POST"
+            }
+            """);
+
+        Assert.Null(error);
+        Assert.Equal(0, messageHandler.CallCount);
+    }
+
+    [Theory]
+    [InlineData(
+        """{"url":"https://api.example.test/tasks","method":"TRACE"}""",
+        "not supported")]
+    [InlineData(
+        """{"url":"https://internal.example.test/tasks","method":"POST"}""",
+        "not allowed")]
+    [InlineData("""{""", "invalid")]
+    public void Invalid_payload_is_rejected_without_sending(
+        string payloadJson,
+        string expectedError)
+    {
+        StubHttpMessageHandler messageHandler = new(
+            new HttpResponseMessage(HttpStatusCode.OK));
+        HttpRequestJobHandler handler = CreateHandler(
+            messageHandler,
+            ["api.example.test"]);
+
+        string? error = handler.ValidatePayload(payloadJson);
+
+        Assert.NotNull(error);
+        Assert.Contains(expectedError, error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, messageHandler.CallCount);
+    }
+
+    [Fact]
     public async Task Host_outside_allowlist_is_rejected_before_sending()
     {
         StubHttpMessageHandler messageHandler = new(

@@ -1,3 +1,4 @@
+using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Abstractions.Persistence;
 using TaskForge.Application.Common.Exceptions;
 using TaskForge.Application.Jobs;
@@ -16,10 +17,9 @@ public sealed class JobManagerTests
     public async Task Valid_command_creates_queues_and_persists_job()
     {
         FakeJobRepository repository = new();
-        JobManager manager = new(
+        JobManager manager = CreateManager(
             repository,
-            new SubmitJobValidator(),
-            new FixedTimeProvider(Now));
+            new StubJobHandler("generate-report"));
         SubmitJobCommand command = new(
             " generate-report ",
             """{"reportName":"Monthly report"}""",
@@ -40,10 +40,7 @@ public sealed class JobManagerTests
     public async Task Invalid_command_is_rejected_before_persistence()
     {
         FakeJobRepository repository = new();
-        JobManager manager = new(
-            repository,
-            new SubmitJobValidator(),
-            new FixedTimeProvider(Now));
+        JobManager manager = CreateManager(repository);
         SubmitJobCommand command = new(
             string.Empty,
             "null",
@@ -61,6 +58,54 @@ public sealed class JobManagerTests
         Assert.Empty(repository.Jobs);
     }
 
+    [Fact]
+    public async Task Unsupported_job_type_is_rejected_before_persistence()
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = CreateManager(repository);
+        SubmitJobCommand command = new(
+            "unknown",
+            """{"value":1}""",
+            JobPriority.Normal,
+            MaxRetries: 3,
+            TimeoutSeconds: 30);
+
+        ApplicationValidationException exception =
+            await Assert.ThrowsAsync<ApplicationValidationException>(
+                () => manager.SubmitAsync(command));
+
+        Assert.Equal(
+            ["Job type 'unknown' is not supported."],
+            exception.Errors["Type"]);
+        Assert.Empty(repository.Jobs);
+    }
+
+    [Fact]
+    public async Task Handler_payload_error_is_rejected_before_persistence()
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = CreateManager(
+            repository,
+            new StubJobHandler(
+                "example",
+                "The example payload is invalid."));
+        SubmitJobCommand command = new(
+            "example",
+            """{"value":1}""",
+            JobPriority.Normal,
+            MaxRetries: 3,
+            TimeoutSeconds: 30);
+
+        ApplicationValidationException exception =
+            await Assert.ThrowsAsync<ApplicationValidationException>(
+                () => manager.SubmitAsync(command));
+
+        Assert.Equal(
+            ["The example payload is invalid."],
+            exception.Errors["Payload"]);
+        Assert.Empty(repository.Jobs);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("null")]
@@ -68,10 +113,7 @@ public sealed class JobManagerTests
     public async Task Missing_or_invalid_payload_is_rejected(string payloadJson)
     {
         FakeJobRepository repository = new();
-        JobManager manager = new(
-            repository,
-            new SubmitJobValidator(),
-            new FixedTimeProvider(Now));
+        JobManager manager = CreateManager(repository);
         SubmitJobCommand command = new(
             "generate-report",
             payloadJson,
@@ -91,10 +133,9 @@ public sealed class JobManagerTests
     public async Task Query_methods_read_through_repository()
     {
         FakeJobRepository repository = new();
-        JobManager manager = new(
+        JobManager manager = CreateManager(
             repository,
-            new SubmitJobValidator(),
-            new FixedTimeProvider(Now));
+            new StubJobHandler("generate-report"));
         Job job = await manager.SubmitAsync(new SubmitJobCommand(
             "generate-report",
             """{"reportName":"Monthly report"}""",
@@ -113,13 +154,12 @@ public sealed class JobManagerTests
     public async Task Repeated_idempotency_key_returns_original_job()
     {
         FakeJobRepository repository = new();
-        JobManager manager = new(
+        JobManager manager = CreateManager(
             repository,
-            new SubmitJobValidator(),
-            new FixedTimeProvider(Now));
+            new StubJobHandler("example"));
         SubmitJobCommand command = new(
-            "delay",
-            """{"delayMilliseconds":1}""",
+            "example",
+            """{"value":1}""",
             JobPriority.Normal,
             MaxRetries: 1,
             TimeoutSeconds: 5);
@@ -141,19 +181,18 @@ public sealed class JobManagerTests
     public async Task Reused_key_with_different_job_is_rejected()
     {
         FakeJobRepository repository = new();
-        JobManager manager = new(
+        JobManager manager = CreateManager(
             repository,
-            new SubmitJobValidator(),
-            new FixedTimeProvider(Now));
+            new StubJobHandler("example"));
         SubmitJobCommand firstCommand = new(
-            "delay",
-            """{"delayMilliseconds":1}""",
+            "example",
+            """{"value":1}""",
             JobPriority.Normal,
             MaxRetries: 1,
             TimeoutSeconds: 5);
         SubmitJobCommand differentCommand = firstCommand with
         {
-            PayloadJson = """{"delayMilliseconds":2}"""
+            PayloadJson = """{"value":2}"""
         };
         await manager.SubmitAsync(firstCommand, "request-123");
 
@@ -162,6 +201,14 @@ public sealed class JobManagerTests
                 differentCommand,
                 "request-123"));
     }
+
+    private static JobManager CreateManager(
+        FakeJobRepository repository,
+        params IJobHandler[] handlers) =>
+        new(
+            repository,
+            new SubmitJobValidator(handlers),
+            new FixedTimeProvider(Now));
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
@@ -236,5 +283,20 @@ public sealed class JobManagerTests
             long expectedVersion,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
+    }
+
+    private sealed class StubJobHandler(
+        string jobType,
+        string? validationError = null)
+        : IJobHandler
+    {
+        public string JobType { get; } = jobType;
+
+        public string? ValidatePayload(string payloadJson) => validationError;
+
+        public Task<string?> HandleAsync(
+            string payloadJson,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
     }
 }

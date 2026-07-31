@@ -41,33 +41,24 @@ public sealed class HttpRequestJobHandler(
 
     public string JobType => "http-request";
 
+    public string? ValidatePayload(string payloadJson)
+    {
+        try
+        {
+            using HttpRequestMessage request = CreateRequest(payloadJson);
+            return null;
+        }
+        catch (InvalidOperationException exception)
+        {
+            return exception.Message;
+        }
+    }
+
     public async Task<string?> HandleAsync(
         string payloadJson,
         CancellationToken cancellationToken = default)
     {
-        HttpRequestJobPayload payload = DeserializePayload(payloadJson);
-        Uri uri = ValidateUri(payload.Url);
-        string method = string.IsNullOrWhiteSpace(payload.Method)
-            ? "POST"
-            : payload.Method.Trim().ToUpperInvariant();
-
-        if (!AllowedMethods.Contains(method))
-        {
-            throw new InvalidOperationException(
-                $"HTTP method '{method}' is not supported.");
-        }
-
-        using HttpRequestMessage request = new(new HttpMethod(method), uri);
-        if (payload.Body is { ValueKind: not JsonValueKind.Null })
-        {
-            request.Content = new StringContent(
-                payload.Body.Value.GetRawText(),
-                Encoding.UTF8,
-                "application/json");
-        }
-
-        AddHeaders(request, payload.Headers);
-
+        using HttpRequestMessage request = CreateRequest(payloadJson);
         using HttpResponseMessage response = await httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
@@ -87,6 +78,42 @@ public sealed class HttpRequestJobHandler(
                 (int)response.StatusCode,
                 response.ReasonPhrase),
             SerializerOptions);
+    }
+
+    private HttpRequestMessage CreateRequest(string payloadJson)
+    {
+        HttpRequestJobPayload payload = DeserializePayload(payloadJson);
+        Uri uri = ValidateUri(payload.Url);
+        string method = string.IsNullOrWhiteSpace(payload.Method)
+            ? "POST"
+            : payload.Method.Trim().ToUpperInvariant();
+
+        if (!AllowedMethods.Contains(method))
+        {
+            throw new InvalidOperationException(
+                $"HTTP method '{method}' is not supported.");
+        }
+
+        HttpRequestMessage request = new(new HttpMethod(method), uri);
+
+        try
+        {
+            if (payload.Body is { ValueKind: not JsonValueKind.Null })
+            {
+                request.Content = new StringContent(
+                    payload.Body.Value.GetRawText(),
+                    Encoding.UTF8,
+                    "application/json");
+            }
+
+            AddHeaders(request, payload.Headers);
+            return request;
+        }
+        catch
+        {
+            request.Dispose();
+            throw;
+        }
     }
 
     private static HttpRequestJobPayload DeserializePayload(string payloadJson)

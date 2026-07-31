@@ -23,7 +23,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<SubmitJobValidator>();
+builder.Services.AddScoped<SubmitJobValidator>();
 builder.Services.AddScoped<JobManager>();
 builder.Services.AddScoped<JobCancellationService>();
 builder.Services.AddSingleton<JobCancellationRegistry>();
@@ -43,7 +43,6 @@ builder.Services
         options => options.LeaseGraceSeconds is >= 1 and <= 3600,
         "Worker lease grace period must be between 1 and 3600 seconds.")
     .ValidateOnStart();
-builder.Services.AddScoped<IJobHandler, DelayJobHandler>();
 builder.Services
     .AddOptions<HttpRequestJobOptions>()
     .Bind(builder.Configuration.GetSection(HttpRequestJobOptions.SectionName))

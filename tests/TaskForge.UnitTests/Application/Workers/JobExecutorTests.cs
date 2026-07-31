@@ -8,7 +8,6 @@ using TaskForge.Application.Jobs;
 using TaskForge.Application.Jobs.Models;
 using TaskForge.Application.Workers;
 using TaskForge.Domain.Jobs;
-using TaskForge.Infrastructure.Jobs.Handlers;
 using TaskForge.Infrastructure.Persistence;
 
 namespace TaskForge.UnitTests.Application.Workers;
@@ -19,22 +18,22 @@ public sealed class JobExecutorTests
         new(2026, 7, 28, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public async Task Delay_job_is_processed_to_completion()
+    public async Task Successful_job_is_processed_to_completion()
     {
         await using SqliteConnection connection = new("Data Source=:memory:");
         await connection.OpenAsync();
         DbContextOptions<TaskForgeDbContext> databaseOptions =
             CreateDatabaseOptions(connection);
         Job job = CreateQueuedJob(
-            "delay",
-            """{"delayMilliseconds":1}""",
+            "successful",
+            """{"value":1}""",
             maxRetries: 0);
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
         SqliteJobStore store = new(workerContext);
         JobExecutor executor = CreateExecutor(
             store,
-            [new DelayJobHandler()]);
+            [new SuccessfulJobHandler()]);
         Guid? currentJobId = null;
 
         bool processed = await executor.ProcessNextAsync(
@@ -220,10 +219,24 @@ public sealed class JobExecutorTests
     {
         public string JobType => "failing";
 
+        public string? ValidatePayload(string payloadJson) => null;
+
         public Task<string?> HandleAsync(
             string payloadJson,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Expected failure.");
+    }
+
+    private sealed class SuccessfulJobHandler : IJobHandler
+    {
+        public string JobType => "successful";
+
+        public string? ValidatePayload(string payloadJson) => null;
+
+        public Task<string?> HandleAsync(
+            string payloadJson,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
     }
 
     private sealed class BlockingJobHandler : IJobHandler
@@ -234,6 +247,8 @@ public sealed class JobExecutorTests
         public string JobType => "blocking";
         public Task Started => _started.Task;
         public bool WasCancelled { get; private set; }
+
+        public string? ValidatePayload(string payloadJson) => null;
 
         public async Task<string?> HandleAsync(
             string payloadJson,
