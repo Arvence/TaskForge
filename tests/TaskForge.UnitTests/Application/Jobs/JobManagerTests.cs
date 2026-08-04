@@ -144,10 +144,33 @@ public sealed class JobManagerTests
             TimeoutSeconds: 30));
 
         IReadOnlyList<Job> jobs = await manager.GetAllAsync();
+        JobPage page = await manager.GetPageAsync(new ListJobsQuery());
         Job? foundJob = await manager.GetByIdAsync(job.Id);
 
         Assert.Same(job, Assert.Single(jobs));
+        Assert.Same(job, Assert.Single(page.Items));
         Assert.Same(job, foundJob);
+    }
+
+    [Theory]
+    [InlineData(0, 50, "Page")]
+    [InlineData(1, 0, "PageSize")]
+    [InlineData(1, 101, "PageSize")]
+    public async Task Invalid_pagination_is_rejected(
+        int page,
+        int pageSize,
+        string errorKey)
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = CreateManager(repository);
+
+        ApplicationValidationException exception =
+            await Assert.ThrowsAsync<ApplicationValidationException>(() =>
+                manager.GetPageAsync(new ListJobsQuery(
+                    Page: page,
+                    PageSize: pageSize)));
+
+        Assert.Contains(errorKey, exception.Errors.Keys);
     }
 
     [Fact]
@@ -248,6 +271,41 @@ public sealed class JobManagerTests
         public Task<IReadOnlyList<Job>> GetAllAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Job>>(Jobs);
+
+        public Task<JobPage> GetPageAsync(
+            ListJobsQuery query,
+            CancellationToken cancellationToken = default)
+        {
+            IEnumerable<Job> jobs = Jobs;
+            if (query.Status is not null)
+            {
+                jobs = jobs.Where(job => job.Status == query.Status);
+            }
+
+            if (query.Type is not null)
+            {
+                jobs = jobs.Where(job => string.Equals(
+                    job.Type,
+                    query.Type,
+                    StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (query.Priority is not null)
+            {
+                jobs = jobs.Where(job => job.Priority == query.Priority);
+            }
+
+            Job[] filteredJobs = jobs.ToArray();
+            Job[] items = filteredJobs
+                .Skip((query.Page - 1) * query.PageSize)
+                .Take(query.PageSize)
+                .ToArray();
+            return Task.FromResult(new JobPage(
+                items,
+                query.Page,
+                query.PageSize,
+                filteredJobs.Length));
+        }
 
         public Task<Job?> FindAsync(
             Guid id,

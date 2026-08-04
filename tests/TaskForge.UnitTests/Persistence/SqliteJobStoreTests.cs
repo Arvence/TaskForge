@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using TaskForge.Application.Jobs.Models;
 using TaskForge.Domain.Jobs;
 using TaskForge.Infrastructure.Persistence;
 
@@ -79,6 +80,50 @@ public sealed class SqliteJobStoreTests
         IReadOnlyList<Job> jobs = await store.GetAllAsync();
 
         Assert.Equal([newer.Id, older.Id], jobs.Select(job => job.Id));
+    }
+
+    [Fact]
+    public async Task Jobs_are_filtered_and_paginated_in_the_database()
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        DbContextOptions<TaskForgeDbContext> options =
+            new DbContextOptionsBuilder<TaskForgeDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+        await using TaskForgeDbContext dbContext = new(options);
+        await dbContext.Database.EnsureCreatedAsync();
+        SqliteJobStore store = new(dbContext);
+        DateTimeOffset now =
+            new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
+
+        await store.AddAsync(CreateJob(Guid.NewGuid(), now, "http-request"));
+        await store.AddAsync(CreateJob(
+            Guid.NewGuid(),
+            now.AddMinutes(1),
+            "generate-report"));
+        Job olderMatch = CreateJob(
+            Guid.NewGuid(),
+            now.AddMinutes(2),
+            "http-request");
+        Job newerMatch = CreateJob(
+            Guid.NewGuid(),
+            now.AddMinutes(3),
+            "http-request");
+        await store.AddAsync(olderMatch);
+        await store.AddAsync(newerMatch);
+
+        JobPage result = await store.GetPageAsync(new ListJobsQuery(
+            Status: JobStatus.Queued,
+            Type: "HTTP-REQUEST",
+            Page: 2,
+            PageSize: 1));
+
+        Assert.Equal(3, result.TotalCount);
+        Assert.Equal(3, result.TotalPages);
+        Assert.Equal(olderMatch.Id, Assert.Single(result.Items).Id);
     }
 
     [Fact]
@@ -260,11 +305,14 @@ public sealed class SqliteJobStoreTests
         Assert.NotEqual(duplicate.Id, persisted.Id);
     }
 
-    private static Job CreateJob(Guid id, DateTimeOffset createdAt)
+    private static Job CreateJob(
+        Guid id,
+        DateTimeOffset createdAt,
+        string type = "generate-report")
     {
         Job job = new(
             id,
-            "generate-report",
+            type,
             """{"reportName":"Monthly report"}""",
             JobPriority.Normal,
             maxRetries: 3,
