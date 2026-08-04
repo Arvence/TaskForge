@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 
 using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Abstractions.Persistence;
+using TaskForge.Application.Jobs.Models;
 using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Infrastructure.Persistence;
@@ -60,7 +61,44 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
         await dbContext.Jobs
             .AsNoTracking()
             .OrderByDescending(job => job.CreatedAtUtc)
+            .ThenByDescending(job => job.Id)
             .ToListAsync(cancellationToken);
+
+    public async Task<JobPage> GetPageAsync(
+        ListJobsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<Job> jobs = dbContext.Jobs.AsNoTracking();
+
+        if (query.Status is not null)
+        {
+            jobs = jobs.Where(job => job.Status == query.Status);
+        }
+
+        if (query.Type is not null)
+        {
+            jobs = jobs.Where(job =>
+                EF.Functions.Collate(job.Type, "NOCASE") == query.Type);
+        }
+
+        if (query.Priority is not null)
+        {
+            jobs = jobs.Where(job => job.Priority == query.Priority);
+        }
+
+        int totalCount = await jobs.CountAsync(cancellationToken);
+        long offset = ((long)query.Page - 1) * query.PageSize;
+        IReadOnlyList<Job> items = offset > int.MaxValue
+            ? []
+            : await jobs
+                .OrderByDescending(job => job.CreatedAtUtc)
+                .ThenByDescending(job => job.Id)
+                .Skip((int)offset)
+                .Take(query.PageSize)
+                .ToListAsync(cancellationToken);
+
+        return new JobPage(items, query.Page, query.PageSize, totalCount);
+    }
 
     public Task<Job?> FindAsync(Guid id, CancellationToken cancellationToken = default) =>
         dbContext.Jobs

@@ -1,3 +1,4 @@
+using TaskForge.Application.Jobs.Models;
 using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Application.Abstractions.Persistence;
@@ -11,6 +12,10 @@ public interface IJobRepository
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<Job>> GetAllAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<JobPage> GetPageAsync(
+        ListJobsQuery query,
         CancellationToken cancellationToken = default);
 
     Task<Job?> FindAsync(Guid id, CancellationToken cancellationToken = default);

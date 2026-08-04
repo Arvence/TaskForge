@@ -58,6 +58,54 @@ public sealed class JobManager(
         CancellationToken cancellationToken = default) =>
         jobRepository.GetAllAsync(cancellationToken);
 
+    public Task<JobPage> GetPageAsync(
+        ListJobsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        Dictionary<string, string[]> errors = [];
+        if (query.Status is not null && !Enum.IsDefined(query.Status.Value))
+        {
+            errors["Status"] = ["Job status is invalid."];
+        }
+
+        if (query.Priority is not null && !Enum.IsDefined(query.Priority.Value))
+        {
+            errors["Priority"] = ["Job priority is invalid."];
+        }
+
+        if (query.Type is not null && string.IsNullOrWhiteSpace(query.Type))
+        {
+            errors["Type"] = ["Job type cannot be blank."];
+        }
+
+        if (query.Page < 1)
+        {
+            errors["Page"] = ["Page must be at least 1."];
+        }
+
+        if (query.PageSize is < 1 or > ListJobsQuery.MaximumPageSize)
+        {
+            errors["PageSize"] =
+            [
+                $"Page size must be between 1 and "
+                + $"{ListJobsQuery.MaximumPageSize}."
+            ];
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new ApplicationValidationException(errors);
+        }
+
+        ListJobsQuery normalizedQuery = query with
+        {
+            Type = query.Type?.Trim()
+        };
+        return jobRepository.GetPageAsync(normalizedQuery, cancellationToken);
+    }
+
     public Task<Job?> GetByIdAsync(
         Guid id,
         CancellationToken cancellationToken = default) =>

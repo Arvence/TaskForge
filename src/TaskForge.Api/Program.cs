@@ -125,17 +125,33 @@ app.MapPost("/api/jobs", async Task<IResult> (
     .ProducesValidationProblem()
     .Produces(StatusCodes.Status409Conflict);
 
-app.MapGet("/api/jobs", async (
+app.MapGet("/api/jobs", async Task<IResult> (
     JobManager jobManager,
-    CancellationToken cancellationToken) =>
+    CancellationToken cancellationToken,
+    [FromQuery] JobStatus? status = null,
+    [FromQuery] string? type = null,
+    [FromQuery] JobPriority? priority = null,
+    [FromQuery] int page = 1,
+    [FromQuery] int pageSize = ListJobsQuery.DefaultPageSize) =>
 {
-    IReadOnlyList<Job> jobs = await jobManager.GetAllAsync(cancellationToken);
-    return Results.Ok(jobs.Select(JobResponse.From));
+    try
+    {
+        JobPage result = await jobManager.GetPageAsync(
+            new ListJobsQuery(status, type, priority, page, pageSize),
+            cancellationToken);
+        return Results.Ok(JobPageResponse.From(result));
+    }
+    catch (ApplicationValidationException exception)
+    {
+        return Results.ValidationProblem(
+            exception.Errors.ToDictionary(error => error.Key, error => error.Value));
+    }
 })
     .WithName("ListJobs")
     .WithTags("Jobs")
-    .WithSummary("List jobs in newest-first order.")
-    .Produces<IEnumerable<JobResponse>>();
+    .WithSummary("Filter and page jobs in newest-first order.")
+    .Produces<JobPageResponse>()
+    .ProducesValidationProblem();
 
 app.MapGet("/api/jobs/{id:guid}", async Task<IResult> (
     Guid id,
