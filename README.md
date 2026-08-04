@@ -42,6 +42,7 @@ flowchart LR
 - `TaskForge.Application`: job workflows, validation, worker management, and abstractions
 - `TaskForge.Infrastructure`: EF Core mappings and SQLite persistence
 - `TaskForge.Api`: HTTP endpoints, configuration, and hosting for the API and workers
+- `TaskForge.Debugging`: initial debug-only console harness configured by `debugsettings.json`
 - `TaskForge.UnitTests`: domain, application, and persistence tests
 
 ## Requirements
