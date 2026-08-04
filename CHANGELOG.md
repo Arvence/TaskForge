@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added job filtering and bounded pagination to `GET /api/jobs`.
 - Removed the demonstration `delay` job handler.
 - Added registered job-type and handler payload validation before queueing.
 

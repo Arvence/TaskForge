@@ -97,6 +97,16 @@ curl -X POST http://localhost:8275/api/jobs \
 Reusing the same idempotency key with the same submission returns the original
 job. Reusing it with different job properties returns `409 Conflict`.
 
+List jobs with optional filters and bounded, one-based pagination:
+
+```bash
+curl "http://localhost:8275/api/jobs?status=Queued&type=http-request&page=1&pageSize=25"
+```
+
+The response includes `items`, `page`, `pageSize`, `totalCount`, and
+`totalPages`. `priority` is also available as a filter. Page size defaults to
+`50` and must be between `1` and `100`.
+
 Cancel a queued or running job:
 
 ```bash
@@ -222,7 +232,6 @@ current scope.
 
 - Database migrations
 - Attempt recording
-- Filtering and pagination
 - Integration tests
 - Authentication for untrusted networks
 - Metrics and structured error middleware
