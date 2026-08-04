@@ -1,0 +1,4 @@
+{
+  "environment": "Debug",
+  "apiBaseUrl": "http://localhost:8275"
+}
