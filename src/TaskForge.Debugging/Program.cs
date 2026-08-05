@@ -1,32 +1,98 @@
 using System.Text.Json;
 
+using TaskForge.Debugging.Api;
+using TaskForge.Debugging.Commands;
+using TaskForge.Debugging.Configuration;
+using TaskForge.Debugging.Presentation;
+
 const string SettingsFileName = "debugsettings.json";
 
-string settingsPath = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
-
-if (!File.Exists(settingsPath))
+using CancellationTokenSource shutdown = new();
+Console.CancelKeyPress += (_, eventArgs) =>
 {
-    Console.Error.WriteLine($"Debug settings were not found at '{settingsPath}'.");
+    eventArgs.Cancel = true;
+    shutdown.Cancel();
+};
+
+try
+{
+    string settingsPath = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
+    DebugSettings settings = await DebugSettings.LoadAsync(
+        settingsPath,
+        shutdown.Token);
+    DebugCommand command = DebugCommand.Parse(args);
+
+    if (command.Kind == DebugCommandKind.Help)
+    {
+        DebugConsole.WriteHelp();
+        return 0;
+    }
+
+    using HttpClient httpClient = new()
+    {
+        BaseAddress = settings.GetApiBaseUri(),
+        Timeout = TimeSpan.FromSeconds(10)
+    };
+    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("TaskForge.Debugging/1.0");
+
+    TaskForgeDebugClient client = new(httpClient);
+    DebugConsole console = new(!Console.IsOutputRedirected);
+
+    if (command.Kind == DebugCommandKind.Jobs)
+    {
+        JobFilters filters = command.Filters
+            ?? throw new InvalidOperationException("Job filters were not provided.");
+        JobPageResponse jobs = await client.GetJobsAsync(
+            filters,
+            pageSize: 20,
+            shutdown.Token);
+        console.WriteJobList(jobs, filters);
+        return 0;
+    }
+
+    Task<HealthResponse> healthTask = client.GetHealthAsync(shutdown.Token);
+    Task<WorkerManagerSnapshot> workersTask = client.GetWorkersAsync(shutdown.Token);
+    Task<JobPageResponse> jobsTask = client.GetJobsAsync(
+        JobFilters.Empty,
+        pageSize: 5,
+        shutdown.Token);
+
+    await Task.WhenAll(healthTask, workersTask, jobsTask);
+    console.WriteDashboard(
+        settings,
+        await healthTask,
+        await workersTask,
+        await jobsTask);
+    return 0;
+}
+catch (TaskCanceledException) when (!shutdown.IsCancellationRequested)
+{
+    Console.Error.WriteLine("The TaskForge API request timed out after 10 seconds.");
     return 1;
 }
-
-await using FileStream settingsStream = File.OpenRead(settingsPath);
-DebugSettings? settings = await JsonSerializer.DeserializeAsync<DebugSettings>(
-    settingsStream,
-    new JsonSerializerOptions(JsonSerializerDefaults.Web));
-
-if (settings is null)
+catch (OperationCanceledException)
 {
-    Console.Error.WriteLine("Debug settings could not be loaded.");
+    Console.Error.WriteLine("TaskForge debugging was cancelled.");
+    return 130;
+}
+catch (HttpRequestException exception)
+{
+    Console.Error.WriteLine($"Could not connect to TaskForge: {exception.Message}");
+    Console.Error.WriteLine("Start the API with: dotnet run --project src/TaskForge.Api");
     return 1;
 }
-
-Console.WriteLine("TaskForge Debugging");
-Console.WriteLine($"Environment: {settings.Environment}");
-Console.WriteLine($"TaskForge API: {settings.ApiBaseUrl}");
-
-return 0;
-
-internal sealed record DebugSettings(
-    string Environment,
-    string ApiBaseUrl);
+catch (TaskForgeApiException exception)
+{
+    Console.Error.WriteLine(
+        $"TaskForge returned HTTP {(int)exception.StatusCode}: {exception.Message}");
+    return 1;
+}
+catch (Exception exception) when (
+    exception is ArgumentException
+        or InvalidOperationException
+        or IOException
+        or JsonException)
+{
+    Console.Error.WriteLine(exception.Message);
+    return 2;
+}
