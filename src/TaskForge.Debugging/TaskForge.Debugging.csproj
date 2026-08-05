@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="TaskForge.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="debugsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
