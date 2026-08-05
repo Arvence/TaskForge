@@ -214,6 +214,24 @@ outside this release.
 dotnet test TaskForge.sln
 ```
 
+## Debugging dashboard
+
+Run the API, then start the debugging project in another terminal:
+
+```bash
+dotnet run --project src/TaskForge.Debugging
+```
+
+The default dashboard shows API health, current worker state, and the five most
+recent jobs. The `jobs` command lists up to 20 jobs and supports combinable
+status, type, and priority filters:
+
+```bash
+dotnet run --project src/TaskForge.Debugging -- jobs --status Retrying
+dotnet run --project src/TaskForge.Debugging -- jobs --type http-request --priority High
+dotnet run --project src/TaskForge.Debugging -- --help
+```
+
 ## Worker behavior
 
 `WorkerManager` runs inside the API process and starts the requested number of
