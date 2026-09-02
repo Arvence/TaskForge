@@ -111,6 +111,107 @@ public sealed class JobExecutorTests
     }
 
     [Fact]
+    public async Task Non_retryable_failure_is_dead_lettered_immediately()
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+        await connection.OpenAsync();
+        DbContextOptions<TaskForgeDbContext> databaseOptions =
+            CreateDatabaseOptions(connection);
+        Job job = CreateQueuedJob(
+            "permanent-failure",
+            """{"value":1}""",
+            maxRetries: 3);
+        await AddJobAsync(databaseOptions, job);
+        await using TaskForgeDbContext workerContext = new(databaseOptions);
+        SqliteJobStore store = new(workerContext);
+        JobExecutor executor = CreateExecutor(
+            store,
+            [new NonRetryableJobHandler()]);
+
+        await executor.ProcessNextAsync(
+            "worker-01",
+            _ => { },
+            CancellationToken.None,
+            CancellationToken.None);
+
+        Job? persistedJob = await store.FindAsync(job.Id);
+        Assert.NotNull(persistedJob);
+        Assert.Equal(JobStatus.DeadLettered, persistedJob.Status);
+        Assert.Equal(0, persistedJob.RetryCount);
+        Assert.Null(persistedJob.NextRetryAtUtc);
+        Assert.Contains("Permanent failure", persistedJob.LastError);
+    }
+
+    [Fact]
+    public async Task Timeout_failure_is_scheduled_for_retry()
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+        await connection.OpenAsync();
+        DbContextOptions<TaskForgeDbContext> databaseOptions =
+            CreateDatabaseOptions(connection);
+        Job job = CreateQueuedJob(
+            "timeout",
+            """{"value":1}""",
+            maxRetries: 1);
+        await AddJobAsync(databaseOptions, job);
+        await using TaskForgeDbContext workerContext = new(databaseOptions);
+        SqliteJobStore store = new(workerContext);
+        JobExecutor executor = CreateExecutor(
+            store,
+            [new TimeoutJobHandler()]);
+
+        await executor.ProcessNextAsync(
+            "worker-01",
+            _ => { },
+            CancellationToken.None,
+            CancellationToken.None);
+
+        Job? persistedJob = await store.FindAsync(job.Id);
+        Assert.NotNull(persistedJob);
+        Assert.Equal(JobStatus.Retrying, persistedJob.Status);
+        Assert.Equal(Now.AddSeconds(5), persistedJob.NextRetryAtUtc);
+        Assert.Contains("timeout", persistedJob.LastError, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Repeated_failures_use_capped_exponential_backoff()
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+        await connection.OpenAsync();
+        DbContextOptions<TaskForgeDbContext> databaseOptions =
+            CreateDatabaseOptions(connection);
+        Job job = CreateQueuedJob(
+            "failing",
+            """{"value":1}""",
+            maxRetries: 3);
+        await AddJobAsync(databaseOptions, job);
+        AdjustableTimeProvider clock = new(Now);
+        WorkerOptions options = new()
+        {
+            Count = 1,
+            PollIntervalMilliseconds = 50,
+            RetryDelaySeconds = 5,
+            MaxRetryDelaySeconds = 12,
+            LeaseGraceSeconds = 30
+        };
+
+        Job? firstFailure = await ProcessFailingJobAsync(databaseOptions, job.Id, clock, options);
+        Assert.NotNull(firstFailure);
+        Assert.Equal(Now.AddSeconds(5), firstFailure.NextRetryAtUtc);
+
+        clock.SetUtcNow(Now.AddSeconds(5));
+        Job? secondFailure = await ProcessFailingJobAsync(databaseOptions, job.Id, clock, options);
+        Assert.NotNull(secondFailure);
+        Assert.Equal(Now.AddSeconds(15), secondFailure.NextRetryAtUtc);
+
+        clock.SetUtcNow(Now.AddSeconds(15));
+        Job? thirdFailure = await ProcessFailingJobAsync(databaseOptions, job.Id, clock, options);
+        Assert.NotNull(thirdFailure);
+        Assert.Equal(3, thirdFailure.RetryCount);
+        Assert.Equal(Now.AddSeconds(27), thirdFailure.NextRetryAtUtc);
+    }
+
+    [Fact]
     public async Task Running_job_can_be_cancelled()
     {
         string connectionString =
@@ -175,20 +276,37 @@ public sealed class JobExecutorTests
         await new SqliteJobStore(setupContext).AddAsync(job);
     }
 
-    private static JobExecutor CreateExecutor(
-        IJobQueue jobQueue,
-        IEnumerable<IJobHandler> handlers,
-        JobCancellationRegistry? cancellationRegistry = null) =>
+    private static async Task<Job?> ProcessFailingJobAsync(DbContextOptions<TaskForgeDbContext> databaseOptions, Guid jobId, TimeProvider timeProvider, WorkerOptions options)
+    {
+        await using TaskForgeDbContext workerContext = new(databaseOptions);
+        SqliteJobStore store = new(workerContext);
+        JobExecutor executor = CreateExecutor(
+            store,
+            [new FailingJobHandler()],
+            timeProvider: timeProvider,
+            options: options);
+
+        await executor.ProcessNextAsync(
+            "worker-01",
+            _ => { },
+            CancellationToken.None,
+            CancellationToken.None);
+
+        return await store.FindAsync(jobId);
+    }
+
+    private static JobExecutor CreateExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> handlers, JobCancellationRegistry? cancellationRegistry = null, TimeProvider? timeProvider = null, WorkerOptions? options = null) =>
         new(
             jobQueue,
             handlers,
             cancellationRegistry ?? new JobCancellationRegistry(),
-            new FixedTimeProvider(Now),
-            Options.Create(new WorkerOptions
+            timeProvider ?? new FixedTimeProvider(Now),
+            Options.Create(options ?? new WorkerOptions
             {
                 Count = 1,
                 PollIntervalMilliseconds = 50,
                 RetryDelaySeconds = 5,
+                MaxRetryDelaySeconds = 300,
                 LeaseGraceSeconds = 30
             }),
             NullLogger<JobExecutor>.Instance);
@@ -215,6 +333,15 @@ public sealed class JobExecutorTests
         public override DateTimeOffset GetUtcNow() => now;
     }
 
+    private sealed class AdjustableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void SetUtcNow(DateTimeOffset now) => _now = now;
+    }
+
     private sealed class FailingJobHandler : IJobHandler
     {
         public string JobType => "failing";
@@ -225,6 +352,26 @@ public sealed class JobExecutorTests
             string payloadJson,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Expected failure.");
+    }
+
+    private sealed class NonRetryableJobHandler : IJobHandler
+    {
+        public string JobType => "permanent-failure";
+
+        public string? ValidatePayload(string payloadJson) => null;
+
+        public Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default) =>
+            throw new NonRetryableJobException("Permanent failure.");
+    }
+
+    private sealed class TimeoutJobHandler : IJobHandler
+    {
+        public string JobType => "timeout";
+
+        public string? ValidatePayload(string payloadJson) => null;
+
+        public Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default) =>
+            throw new TaskCanceledException("Expected timeout.");
     }
 
     private sealed class SuccessfulJobHandler : IJobHandler

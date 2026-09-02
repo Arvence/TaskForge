@@ -144,7 +144,8 @@ curl -X POST http://localhost:8275/api/jobs \
 
 Supported methods are `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`. A `2xx`
 response completes the job and stores a compact result containing the HTTP
-status code; other responses follow the configured retry policy.
+status code. Request timeouts, `408`, `429`, and `5xx` responses are retried;
+other non-success responses are treated as permanent failures.
 Unsupported job types and invalid HTTP request payloads return `400 Bad Request`
 and are not stored.
 
@@ -173,6 +174,7 @@ Worker defaults are configured in the same file:
     "Count": 1,
     "PollIntervalMilliseconds": 500,
     "RetryDelaySeconds": 5,
+    "MaxRetryDelaySeconds": 300,
     "LeaseGraceSeconds": 30
   },
   "HttpRequestJobs": {
@@ -187,6 +189,8 @@ Worker defaults are configured in the same file:
 
 The configured count is used until a user changes it through the API; API
 changes are persisted in SQLite and take precedence on later starts.
+Retry delays grow exponentially from `RetryDelaySeconds` and stop growing at
+`MaxRetryDelaySeconds`.
 
 `http-request` jobs are sent only to exact host names in `AllowedHosts`.
 Redirects are not followed, which prevents a permitted URL from redirecting a
@@ -237,8 +241,9 @@ dotnet run --project src/TaskForge.Debugging -- --help
 `WorkerManager` runs inside the API process and starts the requested number of
 worker loops. Each worker processes one job at a time using its own dependency
 injection scope. Workers select jobs by priority and age, acquire them using the
-job version, execute the matching handler, enforce timeouts, schedule retries,
-dead-letter terminal failures, and recover expired leases.
+job version, execute the matching handler, enforce timeouts, retry transient
+failures with capped exponential backoff, dead-letter permanent failures, and
+recover expired leases.
 
 Scaling down is graceful: a busy worker finishes its current job before it
 stops. Stopping the API also stops all workers; durable queued jobs resume when

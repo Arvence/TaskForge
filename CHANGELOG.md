@@ -5,6 +5,7 @@
 - Added job filtering and bounded pagination to `GET /api/jobs`.
 - Removed the demonstration `delay` job handler.
 - Added registered job-type and handler payload validation before queueing.
+- Added permanent-failure detection and capped exponential backoff for retries.
 
 ## 1.0.0 - 2026-07-28
 

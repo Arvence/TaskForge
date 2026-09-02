@@ -142,6 +142,19 @@ public sealed class JobExecutor(
                     $"Job timed out after {job.TimeoutSeconds} second(s).",
                     CancellationToken.None);
             }
+            catch (NonRetryableJobException exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Job {JobId} failed permanently in worker {WorkerId}.",
+                    job.Id,
+                    workerId);
+
+                await DeadLetterAsync(
+                    job,
+                    $"{exception.GetType().Name}: {exception.Message}",
+                    executionStoppingToken);
+            }
             catch (Exception exception)
             {
                 logger.LogError(
@@ -173,7 +186,7 @@ public sealed class JobExecutor(
         long expectedVersion = job.Version;
         job.Fail(
             Truncate(error),
-            failedAt.AddSeconds(_options.RetryDelaySeconds),
+            failedAt.Add(GetRetryDelay(job)),
             failedAt);
 
         await PersistTransitionAsync(
@@ -181,6 +194,14 @@ public sealed class JobExecutor(
             expectedVersion,
             job.Status == JobStatus.Retrying ? "schedule for retry" : "dead-letter",
             cancellationToken);
+    }
+
+    private TimeSpan GetRetryDelay(Job job)
+    {
+        int exponent = Math.Min(job.RetryCount, 30);
+        long exponentialDelaySeconds = (long)_options.RetryDelaySeconds << exponent;
+        long delaySeconds = Math.Min(exponentialDelaySeconds, _options.MaxRetryDelaySeconds);
+        return TimeSpan.FromSeconds(delaySeconds);
     }
 
     private async Task DeadLetterAsync(

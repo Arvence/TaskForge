@@ -40,6 +40,10 @@ builder.Services
         options => options.RetryDelaySeconds is >= 1 and <= 3600,
         "Worker retry delay must be between 1 and 3600 seconds.")
     .Validate(
+        options => options.MaxRetryDelaySeconds is >= 1 and <= 86_400
+            && options.MaxRetryDelaySeconds >= options.RetryDelaySeconds,
+        "Worker maximum retry delay must be between RetryDelaySeconds and 86400 seconds.")
+    .Validate(
         options => options.LeaseGraceSeconds is >= 1 and <= 3600,
         "Worker lease grace period must be between 1 and 3600 seconds.")
     .ValidateOnStart();

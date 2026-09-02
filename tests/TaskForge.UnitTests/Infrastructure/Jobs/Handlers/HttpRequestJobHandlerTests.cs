@@ -3,6 +3,7 @@ using System.Text.Json;
 
 using Microsoft.Extensions.Options;
 
+using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Infrastructure.Jobs.Handlers;
 
 namespace TaskForge.UnitTests.Infrastructure.Jobs.Handlers;
@@ -99,8 +100,8 @@ public sealed class HttpRequestJobHandlerTests
             messageHandler,
             ["api.example.test"]);
 
-        InvalidOperationException exception =
-            await Assert.ThrowsAsync<InvalidOperationException>(
+        NonRetryableJobException exception =
+            await Assert.ThrowsAsync<NonRetryableJobException>(
                 () => handler.HandleAsync(
                     """
                     {
@@ -113,11 +114,15 @@ public sealed class HttpRequestJobHandlerTests
         Assert.Equal(0, messageHandler.CallCount);
     }
 
-    [Fact]
-    public async Task Non_success_status_is_reported_as_failure()
+    [Theory]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.BadGateway)]
+    public async Task Retryable_status_is_reported_as_transient_failure(HttpStatusCode statusCode)
     {
         StubHttpMessageHandler messageHandler = new(
-            new HttpResponseMessage(HttpStatusCode.BadGateway));
+            new HttpResponseMessage(statusCode));
         HttpRequestJobHandler handler = CreateHandler(
             messageHandler,
             ["api.example.test"]);
@@ -132,7 +137,55 @@ public sealed class HttpRequestJobHandlerTests
                     }
                     """));
 
-        Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
+        Assert.Equal(statusCode, exception.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.MultipleChoices)]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Conflict)]
+    [InlineData(HttpStatusCode.UnprocessableEntity)]
+    public async Task Permanent_status_is_reported_as_non_retryable_failure(HttpStatusCode statusCode)
+    {
+        StubHttpMessageHandler messageHandler = new(
+            new HttpResponseMessage(statusCode));
+        HttpRequestJobHandler handler = CreateHandler(
+            messageHandler,
+            ["api.example.test"]);
+
+        NonRetryableJobException exception =
+            await Assert.ThrowsAsync<NonRetryableJobException>(
+                () => handler.HandleAsync(
+                    """
+                    {
+                      "url": "https://api.example.test/tasks",
+                      "method": "GET"
+                    }
+                    """));
+
+        HttpRequestException innerException =
+            Assert.IsType<HttpRequestException>(exception.InnerException);
+        Assert.Equal(statusCode, innerException.StatusCode);
+    }
+
+    [Fact]
+    public async Task Invalid_payload_is_reported_as_non_retryable_failure()
+    {
+        StubHttpMessageHandler messageHandler = new(
+            new HttpResponseMessage(HttpStatusCode.OK));
+        HttpRequestJobHandler handler = CreateHandler(
+            messageHandler,
+            ["api.example.test"]);
+
+        NonRetryableJobException exception =
+            await Assert.ThrowsAsync<NonRetryableJobException>(
+                () => handler.HandleAsync("""{"""));
+
+        Assert.Contains("invalid", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, messageHandler.CallCount);
     }
 
     private static HttpRequestJobHandler CreateHandler(

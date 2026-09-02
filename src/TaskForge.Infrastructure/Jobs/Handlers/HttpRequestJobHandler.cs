@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.Json;
 
@@ -7,10 +8,7 @@ using TaskForge.Application.Abstractions.Execution;
 
 namespace TaskForge.Infrastructure.Jobs.Handlers;
 
-public sealed class HttpRequestJobHandler(
-    HttpClient httpClient,
-    IOptions<HttpRequestJobOptions> options)
-    : IJobHandler
+public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRequestJobOptions> options) : IJobHandler
 {
     private static readonly JsonSerializerOptions SerializerOptions =
         new(JsonSerializerDefaults.Web);
@@ -54,11 +52,9 @@ public sealed class HttpRequestJobHandler(
         }
     }
 
-    public async Task<string?> HandleAsync(
-        string payloadJson,
-        CancellationToken cancellationToken = default)
+    public async Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default)
     {
-        using HttpRequestMessage request = CreateRequest(payloadJson);
+        using HttpRequestMessage request = CreateExecutionRequest(payloadJson);
         using HttpResponseMessage response = await httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
@@ -66,11 +62,18 @@ public sealed class HttpRequestJobHandler(
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException(
+            HttpRequestException exception = new(
                 $"HTTP request returned {(int)response.StatusCode} "
                 + $"({response.ReasonPhrase}).",
                 null,
                 response.StatusCode);
+
+            if (IsRetryable(response.StatusCode))
+            {
+                throw exception;
+            }
+
+            throw new NonRetryableJobException(exception.Message, exception);
         }
 
         return JsonSerializer.Serialize(
@@ -79,6 +82,20 @@ public sealed class HttpRequestJobHandler(
                 response.ReasonPhrase),
             SerializerOptions);
     }
+
+    private HttpRequestMessage CreateExecutionRequest(string payloadJson)
+    {
+        try
+        {
+            return CreateRequest(payloadJson);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new NonRetryableJobException(exception.Message, exception);
+        }
+    }
+
+    private static bool IsRetryable(HttpStatusCode statusCode) => statusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || (int)statusCode is >= 500 and <= 599;
 
     private HttpRequestMessage CreateRequest(string payloadJson)
     {
