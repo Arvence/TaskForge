@@ -4,21 +4,17 @@ using TaskForge.Application.Abstractions.Persistence;
 
 namespace TaskForge.Infrastructure.Persistence;
 
-public sealed class SqliteWorkerSettingsStore(TaskForgeDbContext dbContext)
+public sealed class EfCoreWorkerSettingsStore(TaskForgeDbContext dbContext)
     : IWorkerSettingsStore
 {
-    public Task<int?> GetDesiredWorkerCountAsync(
-        CancellationToken cancellationToken = default) =>
+    public Task<int?> GetDesiredWorkerCountAsync(CancellationToken cancellationToken = default) =>
         dbContext.WorkerSettings
             .AsNoTracking()
             .Where(settings => settings.Id == WorkerSettingsRecord.SingletonId)
             .Select(settings => (int?)settings.DesiredWorkerCount)
             .SingleOrDefaultAsync(cancellationToken);
 
-    public async Task SetDesiredWorkerCountAsync(
-        int count,
-        DateTimeOffset updatedAtUtc,
-        CancellationToken cancellationToken = default)
+    public async Task SetDesiredWorkerCountAsync(int count, DateTimeOffset updatedAtUtc, CancellationToken cancellationToken = default)
     {
         WorkerSettingsRecord? settings = await dbContext.WorkerSettings
             .SingleOrDefaultAsync(

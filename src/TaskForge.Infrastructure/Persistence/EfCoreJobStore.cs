@@ -7,7 +7,7 @@ using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Infrastructure.Persistence;
 
-public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
+public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
     : IJobRepository, IJobQueue
 {
     public async Task AddAsync(Job job, CancellationToken cancellationToken = default)
@@ -16,9 +16,7 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<Job> AddOrGetExistingAsync(
-        Job job,
-        CancellationToken cancellationToken = default)
+    public async Task<Job> AddOrGetExistingAsync(Job job, CancellationToken cancellationToken = default)
     {
         if (job.IdempotencyKey is null)
         {
@@ -56,17 +54,14 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
         }
     }
 
-    public async Task<IReadOnlyList<Job>> GetAllAsync(
-        CancellationToken cancellationToken = default) =>
+    public async Task<IReadOnlyList<Job>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await dbContext.Jobs
             .AsNoTracking()
             .OrderByDescending(job => job.CreatedAtUtc)
             .ThenByDescending(job => job.Id)
             .ToListAsync(cancellationToken);
 
-    public async Task<JobPage> GetPageAsync(
-        ListJobsQuery query,
-        CancellationToken cancellationToken = default)
+    public async Task<JobPage> GetPageAsync(ListJobsQuery query, CancellationToken cancellationToken = default)
     {
         IQueryable<Job> jobs = dbContext.Jobs.AsNoTracking();
 
@@ -77,8 +72,8 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
 
         if (query.Type is not null)
         {
-            jobs = jobs.Where(job =>
-                EF.Functions.Collate(job.Type, "NOCASE") == query.Type);
+            string normalizedType = query.Type.ToUpperInvariant();
+            jobs = jobs.Where(job => job.Type.ToUpper() == normalizedType);
         }
 
         if (query.Priority is not null)
@@ -105,21 +100,14 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
             .AsNoTracking()
             .SingleOrDefaultAsync(job => job.Id == id, cancellationToken);
 
-    public Task<Job?> FindByIdempotencyKeyAsync(
-        string idempotencyKey,
-        CancellationToken cancellationToken = default) =>
+    public Task<Job?> FindByIdempotencyKeyAsync(string idempotencyKey, CancellationToken cancellationToken = default) =>
         dbContext.Jobs
             .AsNoTracking()
             .SingleOrDefaultAsync(
                 job => job.IdempotencyKey == idempotencyKey,
                 cancellationToken);
 
-    public async Task<Job?> TryAcquireAsync(
-        Guid id,
-        string workerId,
-        DateTimeOffset leaseExpiresAtUtc,
-        DateTimeOffset now,
-        CancellationToken cancellationToken = default)
+    public async Task<Job?> TryAcquireAsync(Guid id, string workerId, DateTimeOffset leaseExpiresAtUtc, DateTimeOffset now, CancellationToken cancellationToken = default)
     {
         Job? job = await FindAsync(id, cancellationToken);
         if (job?.Status != JobStatus.Queued)
@@ -135,10 +123,7 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
             : null;
     }
 
-    public async Task<bool> TryUpdateAsync(
-        Job job,
-        long expectedVersion,
-        CancellationToken cancellationToken = default)
+    public async Task<bool> TryUpdateAsync(Job job, long expectedVersion, CancellationToken cancellationToken = default)
     {
         dbContext.Jobs.Update(job);
         dbContext.Entry(job)
@@ -157,11 +142,7 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
         }
     }
 
-    public async Task<Job?> TryAcquireNextAsync(
-        string workerId,
-        TimeSpan leaseGracePeriod,
-        DateTimeOffset now,
-        CancellationToken cancellationToken = default)
+    public async Task<Job?> TryAcquireNextAsync(string workerId, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workerId);
 
@@ -205,9 +186,7 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
             : null;
     }
 
-    public async Task<int> RecoverExpiredLeasesAsync(
-        DateTimeOffset now,
-        CancellationToken cancellationToken = default)
+    public async Task<int> RecoverExpiredLeasesAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
     {
         List<Job> expiredJobs = await dbContext.Jobs
             .AsNoTracking()
@@ -232,19 +211,14 @@ public sealed class SqliteJobStore(TaskForgeDbContext dbContext)
         return recoveredCount;
     }
 
-    public Task<bool> IsCancellationRequestedAsync(
-        Guid jobId,
-        CancellationToken cancellationToken = default) =>
+    public Task<bool> IsCancellationRequestedAsync(Guid jobId, CancellationToken cancellationToken = default) =>
         dbContext.Jobs
             .AsNoTracking()
             .Where(job => job.Id == jobId)
             .Select(job => job.CancellationRequested)
             .SingleOrDefaultAsync(cancellationToken);
 
-    public async Task<bool> TryCancelProcessingAsync(
-        Guid jobId,
-        DateTimeOffset now,
-        CancellationToken cancellationToken = default)
+    public async Task<bool> TryCancelProcessingAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken = default)
     {
         dbContext.ChangeTracker.Clear();
         Job? job = await FindAsync(jobId, cancellationToken);

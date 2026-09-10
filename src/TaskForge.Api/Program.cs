@@ -68,10 +68,9 @@ builder.Services.AddScoped<JobExecutor>();
 builder.Services.AddSingleton<WorkerManager>();
 builder.Services.AddHostedService(
     serviceProvider => serviceProvider.GetRequiredService<WorkerManager>());
-builder.Services.AddTaskForgeSqlite(
+builder.Services.AddTaskForgeSqlServer(
     builder.Configuration.GetConnectionString("TaskForge")
-        ?? "Data Source=data/taskforge.db",
-    builder.Environment.ContentRootPath);
+        ?? throw new InvalidOperationException("The TaskForge SQL Server connection string is required."));
 
 var app = builder.Build();
 
