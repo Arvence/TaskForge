@@ -21,7 +21,7 @@ public sealed class SqliteWorkerSettingsStoreTests
         await using (TaskForgeDbContext writeContext = new(options))
         {
             await writeContext.Database.EnsureCreatedAsync();
-            SqliteWorkerSettingsStore store = new(writeContext);
+            EfCoreWorkerSettingsStore store = new(writeContext);
             await store.SetDesiredWorkerCountAsync(
                 4,
                 new DateTimeOffset(
@@ -35,7 +35,7 @@ public sealed class SqliteWorkerSettingsStoreTests
         }
 
         await using TaskForgeDbContext readContext = new(options);
-        SqliteWorkerSettingsStore readStore = new(readContext);
+        EfCoreWorkerSettingsStore readStore = new(readContext);
 
         int? workerCount = await readStore.GetDesiredWorkerCountAsync();
 

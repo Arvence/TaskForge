@@ -37,12 +37,12 @@ public sealed class SqliteJobStoreTests
 
         await using (TaskForgeDbContext writeContext = new(options))
         {
-            SqliteJobStore writeStore = new(writeContext);
+            EfCoreJobStore writeStore = new(writeContext);
             await writeStore.AddAsync(job);
         }
 
         await using TaskForgeDbContext readContext = new(options);
-        SqliteJobStore readStore = new(readContext);
+        EfCoreJobStore readStore = new(readContext);
 
         Job? persistedJob = await readStore.FindAsync(job.Id);
 
@@ -72,7 +72,7 @@ public sealed class SqliteJobStoreTests
         DateTimeOffset now = new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
         Job older = CreateJob(Guid.NewGuid(), now);
         Job newer = CreateJob(Guid.NewGuid(), now.AddMinutes(1));
-        SqliteJobStore store = new(dbContext);
+        EfCoreJobStore store = new(dbContext);
 
         await store.AddAsync(older);
         await store.AddAsync(newer);
@@ -95,7 +95,7 @@ public sealed class SqliteJobStoreTests
 
         await using TaskForgeDbContext dbContext = new(options);
         await dbContext.Database.EnsureCreatedAsync();
-        SqliteJobStore store = new(dbContext);
+        EfCoreJobStore store = new(dbContext);
         DateTimeOffset now =
             new(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
 
@@ -144,14 +144,14 @@ public sealed class SqliteJobStoreTests
         await using (TaskForgeDbContext setupContext = new(options))
         {
             await setupContext.Database.EnsureCreatedAsync();
-            await new SqliteJobStore(setupContext).AddAsync(job);
+            await new EfCoreJobStore(setupContext).AddAsync(job);
         }
 
         DateTimeOffset now = new(2026, 7, 20, 12, 1, 0, TimeSpan.Zero);
         await using TaskForgeDbContext firstContext = new(options);
         await using TaskForgeDbContext secondContext = new(options);
-        SqliteJobStore firstStore = new(firstContext);
-        SqliteJobStore secondStore = new(secondContext);
+        EfCoreJobStore firstStore = new(firstContext);
+        EfCoreJobStore secondStore = new(secondContext);
 
         Job? acquired = await firstStore.TryAcquireAsync(
             job.Id,
@@ -188,13 +188,13 @@ public sealed class SqliteJobStoreTests
         await using (TaskForgeDbContext setupContext = new(options))
         {
             await setupContext.Database.EnsureCreatedAsync();
-            await new SqliteJobStore(setupContext).AddAsync(job);
+            await new EfCoreJobStore(setupContext).AddAsync(job);
         }
 
         await using TaskForgeDbContext firstContext = new(options);
         await using TaskForgeDbContext secondContext = new(options);
-        SqliteJobStore firstStore = new(firstContext);
-        SqliteJobStore secondStore = new(secondContext);
+        EfCoreJobStore firstStore = new(firstContext);
+        EfCoreJobStore secondStore = new(secondContext);
         Job firstCopy = (await firstStore.FindAsync(job.Id))!;
         Job staleCopy = (await secondStore.FindAsync(job.Id))!;
         long expectedVersion = firstCopy.Version;
@@ -240,13 +240,13 @@ public sealed class SqliteJobStoreTests
         await using (TaskForgeDbContext setupContext = new(options))
         {
             await setupContext.Database.EnsureCreatedAsync();
-            SqliteJobStore setupStore = new(setupContext);
+            EfCoreJobStore setupStore = new(setupContext);
             await setupStore.AddAsync(lowPriority);
             await setupStore.AddAsync(highPriority);
         }
 
         await using TaskForgeDbContext workerContext = new(options);
-        SqliteJobStore store = new(workerContext);
+        EfCoreJobStore store = new(workerContext);
         Job? acquired = await store.TryAcquireNextAsync(
             "worker-01",
             TimeSpan.FromSeconds(30),
@@ -283,7 +283,7 @@ public sealed class SqliteJobStoreTests
         await using (TaskForgeDbContext firstContext = new(options))
         {
             await firstContext.Database.EnsureCreatedAsync();
-            await new SqliteJobStore(firstContext).AddOrGetExistingAsync(original);
+            await new EfCoreJobStore(firstContext).AddOrGetExistingAsync(original);
         }
 
         Job duplicate = new(
@@ -298,7 +298,7 @@ public sealed class SqliteJobStoreTests
         duplicate.Queue(now);
         await using TaskForgeDbContext secondContext = new(options);
 
-        Job persisted = await new SqliteJobStore(secondContext)
+        Job persisted = await new EfCoreJobStore(secondContext)
             .AddOrGetExistingAsync(duplicate);
 
         Assert.Equal(original.Id, persisted.Id);

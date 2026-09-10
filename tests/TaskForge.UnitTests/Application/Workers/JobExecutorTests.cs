@@ -30,7 +30,7 @@ public sealed class JobExecutorTests
             maxRetries: 0);
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
-        SqliteJobStore store = new(workerContext);
+        EfCoreJobStore store = new(workerContext);
         JobExecutor executor = CreateExecutor(
             store,
             [new SuccessfulJobHandler()]);
@@ -63,7 +63,7 @@ public sealed class JobExecutorTests
             maxRetries: 3);
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
-        SqliteJobStore store = new(workerContext);
+        EfCoreJobStore store = new(workerContext);
         JobExecutor executor = CreateExecutor(store, []);
 
         await executor.ProcessNextAsync(
@@ -91,7 +91,7 @@ public sealed class JobExecutorTests
             maxRetries: 1);
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
-        SqliteJobStore store = new(workerContext);
+        EfCoreJobStore store = new(workerContext);
         JobExecutor executor = CreateExecutor(
             store,
             [new FailingJobHandler()]);
@@ -123,7 +123,7 @@ public sealed class JobExecutorTests
             maxRetries: 3);
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
-        SqliteJobStore store = new(workerContext);
+        EfCoreJobStore store = new(workerContext);
         JobExecutor executor = CreateExecutor(
             store,
             [new NonRetryableJobHandler()]);
@@ -155,7 +155,7 @@ public sealed class JobExecutorTests
             maxRetries: 1);
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
-        SqliteJobStore store = new(workerContext);
+        EfCoreJobStore store = new(workerContext);
         JobExecutor executor = CreateExecutor(
             store,
             [new TimeoutJobHandler()]);
@@ -231,7 +231,7 @@ public sealed class JobExecutorTests
         BlockingJobHandler handler = new();
 
         await using TaskForgeDbContext workerContext = new(databaseOptions);
-        SqliteJobStore workerStore = new(workerContext);
+        EfCoreJobStore workerStore = new(workerContext);
         JobExecutor executor = CreateExecutor(
             workerStore,
             [handler],
@@ -245,7 +245,7 @@ public sealed class JobExecutorTests
 
         await using TaskForgeDbContext apiContext = new(databaseOptions);
         JobCancellationService cancellationService = new(
-            new SqliteJobStore(apiContext),
+            new EfCoreJobStore(apiContext),
             cancellationRegistry,
             new FixedTimeProvider(Now.AddSeconds(1)));
         JobCancellationResult cancellation = await cancellationService.RequestAsync(
@@ -253,7 +253,7 @@ public sealed class JobExecutorTests
 
         Assert.True(await execution);
         await using TaskForgeDbContext readContext = new(databaseOptions);
-        Job? persistedJob = await new SqliteJobStore(readContext).FindAsync(job.Id);
+        Job? persistedJob = await new EfCoreJobStore(readContext).FindAsync(job.Id);
         Assert.Equal(JobCancellationStatus.Accepted, cancellation.Status);
         Assert.NotNull(persistedJob);
         Assert.Equal(JobStatus.Cancelled, persistedJob.Status);
@@ -273,13 +273,13 @@ public sealed class JobExecutorTests
     {
         await using TaskForgeDbContext setupContext = new(databaseOptions);
         await setupContext.Database.EnsureCreatedAsync();
-        await new SqliteJobStore(setupContext).AddAsync(job);
+        await new EfCoreJobStore(setupContext).AddAsync(job);
     }
 
     private static async Task<Job?> ProcessFailingJobAsync(DbContextOptions<TaskForgeDbContext> databaseOptions, Guid jobId, TimeProvider timeProvider, WorkerOptions options)
     {
         await using TaskForgeDbContext workerContext = new(databaseOptions);
-        SqliteJobStore store = new(workerContext);
+        EfCoreJobStore store = new(workerContext);
         JobExecutor executor = CreateExecutor(
             store,
             [new FailingJobHandler()],

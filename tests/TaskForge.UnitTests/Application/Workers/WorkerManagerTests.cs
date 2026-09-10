@@ -33,12 +33,12 @@ public sealed class WorkerManagerTests
             }));
         services.AddDbContext<TaskForgeDbContext>(
             options => options.UseSqlite(connectionString));
-        services.AddScoped<SqliteJobStore>();
+        services.AddScoped<EfCoreJobStore>();
         services.AddScoped<IJobQueue>(
-            provider => provider.GetRequiredService<SqliteJobStore>());
+            provider => provider.GetRequiredService<EfCoreJobStore>());
         services.AddScoped<IJobRepository>(
-            provider => provider.GetRequiredService<SqliteJobStore>());
-        services.AddScoped<IWorkerSettingsStore, SqliteWorkerSettingsStore>();
+            provider => provider.GetRequiredService<EfCoreJobStore>());
+        services.AddScoped<IWorkerSettingsStore, EfCoreWorkerSettingsStore>();
         services.AddSingleton<JobCancellationRegistry>();
         services.AddScoped<JobExecutor>();
         services.AddSingleton<WorkerManager>();
