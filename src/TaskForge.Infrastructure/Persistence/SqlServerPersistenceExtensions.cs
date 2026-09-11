@@ -27,6 +27,6 @@ public static class SqlServerPersistenceExtensions
         await using AsyncServiceScope scope = serviceProvider.CreateAsyncScope();
         TaskForgeDbContext dbContext =
             scope.ServiceProvider.GetRequiredService<TaskForgeDbContext>();
-        await dbContext.Database.EnsureCreatedAsync(cancellationToken);
+        await dbContext.Database.MigrateAsync(cancellationToken);
     }
 }
