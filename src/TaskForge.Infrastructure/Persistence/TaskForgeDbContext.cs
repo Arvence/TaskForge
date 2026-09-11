@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 using TaskForge.Domain.Jobs;
 using TaskForge.Domain.Workers;
@@ -33,9 +32,12 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
 
             builder.Property(job => job.Type)
                 .HasMaxLength(100)
+                .UseCollation("Latin1_General_100_CI_AS")
                 .IsRequired();
             builder.Property(job => job.PayloadJson).IsRequired();
-            builder.Property(job => job.IdempotencyKey).HasMaxLength(100);
+            builder.Property(job => job.IdempotencyKey)
+                .HasMaxLength(100)
+                .UseCollation("Latin1_General_100_BIN2");
             builder.Property(job => job.ResultJson).HasMaxLength(4000);
             builder.Property(job => job.Priority);
             builder.Property(job => job.Status)
@@ -44,19 +46,19 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
             builder.Property(job => job.OwningWorkerId).HasMaxLength(200);
             builder.Property(job => job.LastError).HasMaxLength(4000);
             builder.Property(job => job.CreatedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.UpdatedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.QueuedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.StartedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.CompletedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.NextRetryAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.LeaseExpiresAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.Version).IsConcurrencyToken();
 
             builder.HasIndex(job => new { job.Status, job.Priority, job.CreatedAtUtc });
@@ -80,9 +82,9 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
                 .HasConversion<string>()
                 .HasMaxLength(20);
             builder.Property(attempt => attempt.StartedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(attempt => attempt.FinishedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(attempt => attempt.ErrorCode).HasMaxLength(100);
             builder.Property(attempt => attempt.ErrorMessage).HasMaxLength(4000);
 
@@ -107,11 +109,11 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
                 .HasConversion<string>()
                 .HasMaxLength(20);
             builder.Property(worker => worker.StartedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(worker => worker.LastHeartbeatAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(worker => worker.StoppedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
             builder.Property(worker => worker.Version).IsConcurrencyToken();
 
             builder.HasIndex(worker => worker.LastHeartbeatAtUtc);
@@ -125,8 +127,9 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
         {
             builder.ToTable("WorkerSettings");
             builder.HasKey(settings => settings.Id);
+            builder.Property(settings => settings.Id).ValueGeneratedNever();
             builder.Property(settings => settings.UpdatedAtUtc)
-                .HasConversion<DateTimeOffsetToBinaryConverter>();
+                .HasColumnType("datetimeoffset");
         }
     }
 }

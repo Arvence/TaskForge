@@ -72,8 +72,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
 
         if (query.Type is not null)
         {
-            string normalizedType = query.Type.ToUpperInvariant();
-            jobs = jobs.Where(job => job.Type.ToUpper() == normalizedType);
+            jobs = jobs.Where(job => job.Type == query.Type);
         }
 
         if (query.Priority is not null)
