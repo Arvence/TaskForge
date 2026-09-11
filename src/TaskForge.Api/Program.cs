@@ -18,6 +18,13 @@ using TaskForge.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
+string? connectionString = builder.Configuration.GetConnectionString("TaskForge");
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    throw new InvalidOperationException(
+        "The TaskForge SQL Server connection string is required. Set ConnectionStrings:TaskForge or the ConnectionStrings__TaskForge environment variable.");
+}
+
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
@@ -68,9 +75,7 @@ builder.Services.AddScoped<JobExecutor>();
 builder.Services.AddSingleton<WorkerManager>();
 builder.Services.AddHostedService(
     serviceProvider => serviceProvider.GetRequiredService<WorkerManager>());
-builder.Services.AddTaskForgeSqlServer(
-    builder.Configuration.GetConnectionString("TaskForge")
-        ?? throw new InvalidOperationException("The TaskForge SQL Server connection string is required."));
+builder.Services.AddTaskForgeSqlServer(connectionString);
 
 var app = builder.Build();
 
