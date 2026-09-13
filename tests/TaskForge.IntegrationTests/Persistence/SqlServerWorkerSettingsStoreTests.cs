@@ -1,26 +1,19 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 using TaskForge.Infrastructure.Persistence;
 
-namespace TaskForge.UnitTests.Persistence;
+namespace TaskForge.IntegrationTests.Persistence;
 
-public sealed class SqliteWorkerSettingsStoreTests
+[Collection("SQL Server")]
+public sealed class SqlServerWorkerSettingsStoreTests(SqlServerFixture fixture) : SqlServerTest(fixture)
 {
     [Fact]
     public async Task Worker_count_is_persisted_across_contexts()
     {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-        await connection.OpenAsync();
-
-        DbContextOptions<TaskForgeDbContext> options =
-            new DbContextOptionsBuilder<TaskForgeDbContext>()
-                .UseSqlite(connection)
-                .Options;
+        DbContextOptions<TaskForgeDbContext> options = DatabaseOptions;
 
         await using (TaskForgeDbContext writeContext = new(options))
         {
-            await writeContext.Database.EnsureCreatedAsync();
             EfCoreWorkerSettingsStore store = new(writeContext);
             await store.SetDesiredWorkerCountAsync(
                 4,

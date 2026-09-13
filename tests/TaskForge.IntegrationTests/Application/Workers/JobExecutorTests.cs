@@ -1,5 +1,5 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -10,9 +10,10 @@ using TaskForge.Application.Workers;
 using TaskForge.Domain.Jobs;
 using TaskForge.Infrastructure.Persistence;
 
-namespace TaskForge.UnitTests.Application.Workers;
+namespace TaskForge.IntegrationTests.Application.Workers;
 
-public sealed class JobExecutorTests
+[Collection("SQL Server")]
+public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(fixture)
 {
     private static readonly DateTimeOffset Now =
         new(2026, 7, 28, 12, 0, 0, TimeSpan.Zero);
@@ -20,10 +21,7 @@ public sealed class JobExecutorTests
     [Fact]
     public async Task Successful_job_is_processed_to_completion()
     {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-        await connection.OpenAsync();
-        DbContextOptions<TaskForgeDbContext> databaseOptions =
-            CreateDatabaseOptions(connection);
+        DbContextOptions<TaskForgeDbContext> databaseOptions = DatabaseOptions;
         Job job = CreateQueuedJob(
             "successful",
             """{"value":1}""",
@@ -53,10 +51,7 @@ public sealed class JobExecutorTests
     [Fact]
     public async Task Unsupported_job_is_dead_lettered()
     {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-        await connection.OpenAsync();
-        DbContextOptions<TaskForgeDbContext> databaseOptions =
-            CreateDatabaseOptions(connection);
+        DbContextOptions<TaskForgeDbContext> databaseOptions = DatabaseOptions;
         Job job = CreateQueuedJob(
             "unknown",
             """{"value":1}""",
@@ -81,10 +76,7 @@ public sealed class JobExecutorTests
     [Fact]
     public async Task Failed_job_uses_retry_policy()
     {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-        await connection.OpenAsync();
-        DbContextOptions<TaskForgeDbContext> databaseOptions =
-            CreateDatabaseOptions(connection);
+        DbContextOptions<TaskForgeDbContext> databaseOptions = DatabaseOptions;
         Job job = CreateQueuedJob(
             "failing",
             """{"value":1}""",
@@ -113,10 +105,7 @@ public sealed class JobExecutorTests
     [Fact]
     public async Task Non_retryable_failure_is_dead_lettered_immediately()
     {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-        await connection.OpenAsync();
-        DbContextOptions<TaskForgeDbContext> databaseOptions =
-            CreateDatabaseOptions(connection);
+        DbContextOptions<TaskForgeDbContext> databaseOptions = DatabaseOptions;
         Job job = CreateQueuedJob(
             "permanent-failure",
             """{"value":1}""",
@@ -145,10 +134,7 @@ public sealed class JobExecutorTests
     [Fact]
     public async Task Timeout_failure_is_scheduled_for_retry()
     {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-        await connection.OpenAsync();
-        DbContextOptions<TaskForgeDbContext> databaseOptions =
-            CreateDatabaseOptions(connection);
+        DbContextOptions<TaskForgeDbContext> databaseOptions = DatabaseOptions;
         Job job = CreateQueuedJob(
             "timeout",
             """{"value":1}""",
@@ -176,10 +162,7 @@ public sealed class JobExecutorTests
     [Fact]
     public async Task Repeated_failures_use_capped_exponential_backoff()
     {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-        await connection.OpenAsync();
-        DbContextOptions<TaskForgeDbContext> databaseOptions =
-            CreateDatabaseOptions(connection);
+        DbContextOptions<TaskForgeDbContext> databaseOptions = DatabaseOptions;
         Job job = CreateQueuedJob(
             "failing",
             """{"value":1}""",
@@ -214,13 +197,10 @@ public sealed class JobExecutorTests
     [Fact]
     public async Task Running_job_can_be_cancelled()
     {
-        string connectionString =
-            $"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared";
-        await using SqliteConnection anchorConnection = new(connectionString);
-        await anchorConnection.OpenAsync();
+        string connectionString = ConnectionString;
         DbContextOptions<TaskForgeDbContext> databaseOptions =
             new DbContextOptionsBuilder<TaskForgeDbContext>()
-                .UseSqlite(connectionString)
+                .UseSqlServer(connectionString)
                 .Options;
         Job job = CreateQueuedJob(
             "blocking",
@@ -241,7 +221,7 @@ public sealed class JobExecutorTests
             _ => { },
             CancellationToken.None,
             CancellationToken.None);
-        await handler.Started;
+        await handler.Started.WaitAsync(TimeSpan.FromSeconds(30));
 
         await using TaskForgeDbContext apiContext = new(databaseOptions);
         JobCancellationService cancellationService = new(
@@ -251,7 +231,7 @@ public sealed class JobExecutorTests
         JobCancellationResult cancellation = await cancellationService.RequestAsync(
             job.Id);
 
-        Assert.True(await execution);
+        Assert.True(await execution.WaitAsync(TimeSpan.FromSeconds(30)));
         await using TaskForgeDbContext readContext = new(databaseOptions);
         Job? persistedJob = await new EfCoreJobStore(readContext).FindAsync(job.Id);
         Assert.Equal(JobCancellationStatus.Accepted, cancellation.Status);
@@ -261,18 +241,77 @@ public sealed class JobExecutorTests
         Assert.True(handler.WasCancelled);
     }
 
-    private static DbContextOptions<TaskForgeDbContext> CreateDatabaseOptions(
-        SqliteConnection connection) =>
-        new DbContextOptionsBuilder<TaskForgeDbContext>()
-            .UseSqlite(connection)
+    [Fact]
+    public async Task Cancellation_wins_when_completion_tries_to_save_a_stale_version()
+    {
+        Job job = CreateQueuedJob("successful", "{}", maxRetries: 0);
+        await AddJobAsync(DatabaseOptions, job);
+        CompletionSaveInterceptor completion = new();
+        DbContextOptions<TaskForgeDbContext> workerOptions = new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions)
+            .AddInterceptors(completion)
             .Options;
+        JobCancellationRegistry cancellationRegistry = new();
+        await using TaskForgeDbContext workerContext = new(workerOptions);
+        JobExecutor executor = CreateExecutor(new EfCoreJobStore(workerContext), [new SuccessfulJobHandler()], cancellationRegistry);
+        Task<bool> execution = executor.ProcessNextAsync("worker-01", _ => { }, CancellationToken.None, CancellationToken.None);
 
-    private static async Task AddJobAsync(
-        DbContextOptions<TaskForgeDbContext> databaseOptions,
-        Job job)
+        try
+        {
+            await completion.Ready.WaitAsync(TimeSpan.FromSeconds(30));
+            await using TaskForgeDbContext apiContext = new(DatabaseOptions);
+            JobCancellationService cancellationService = new(new EfCoreJobStore(apiContext), cancellationRegistry, new FixedTimeProvider(Now));
+            JobCancellationResult result = await cancellationService.RequestAsync(job.Id);
+            Assert.Equal(JobCancellationStatus.Accepted, result.Status);
+        }
+        finally
+        {
+            completion.Release();
+            await execution.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        Assert.True(await execution);
+        Assert.True(completion.ConcurrencyConflictObserved);
+        await using TaskForgeDbContext readContext = new(DatabaseOptions);
+        Job persisted = await readContext.Jobs.AsNoTracking().SingleAsync();
+        Assert.Equal(JobStatus.Cancelled, persisted.Status);
+        Assert.True(persisted.CancellationRequested);
+        Assert.Null(persisted.CompletedAtUtc);
+        Assert.Null(persisted.OwningWorkerId);
+        Assert.Null(persisted.LeaseExpiresAtUtc);
+        Assert.Equal(job.Version + 3, persisted.Version);
+    }
+
+    private sealed class CompletionSaveInterceptor : SaveChangesInterceptor
+    {
+        private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Ready => _ready.Task;
+        public bool ConcurrencyConflictObserved { get; private set; }
+
+        public void Release() => _released.TrySetResult();
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<Job>().Any(entry => entry.Entity.Status == JobStatus.Completed))
+            {
+                _ready.TrySetResult();
+                await _released.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult> ThrowingConcurrencyExceptionAsync(ConcurrencyExceptionEventData eventData, InterceptionResult result, CancellationToken cancellationToken = default)
+        {
+            ConcurrencyConflictObserved = true;
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private static async Task AddJobAsync(DbContextOptions<TaskForgeDbContext> databaseOptions, Job job)
     {
         await using TaskForgeDbContext setupContext = new(databaseOptions);
-        await setupContext.Database.EnsureCreatedAsync();
         await new EfCoreJobStore(setupContext).AddAsync(job);
     }
 
@@ -311,10 +350,7 @@ public sealed class JobExecutorTests
             }),
             NullLogger<JobExecutor>.Instance);
 
-    private static Job CreateQueuedJob(
-        string type,
-        string payload,
-        int maxRetries)
+    private static Job CreateQueuedJob(string type, string payload, int maxRetries)
     {
         Job job = new(
             Guid.NewGuid(),
@@ -348,9 +384,7 @@ public sealed class JobExecutorTests
 
         public string? ValidatePayload(string payloadJson) => null;
 
-        public Task<string?> HandleAsync(
-            string payloadJson,
-            CancellationToken cancellationToken = default) =>
+        public Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Expected failure.");
     }
 
@@ -380,9 +414,7 @@ public sealed class JobExecutorTests
 
         public string? ValidatePayload(string payloadJson) => null;
 
-        public Task<string?> HandleAsync(
-            string payloadJson,
-            CancellationToken cancellationToken = default) =>
+        public Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default) =>
             Task.FromResult<string?>(null);
     }
 
@@ -397,9 +429,7 @@ public sealed class JobExecutorTests
 
         public string? ValidatePayload(string payloadJson) => null;
 
-        public async Task<string?> HandleAsync(
-            string payloadJson,
-            CancellationToken cancellationToken = default)
+        public async Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default)
         {
             _started.SetResult();
 

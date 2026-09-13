@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -8,17 +7,15 @@ using TaskForge.Application.Abstractions.Persistence;
 using TaskForge.Application.Workers;
 using TaskForge.Infrastructure.Persistence;
 
-namespace TaskForge.UnitTests.Application.Workers;
+namespace TaskForge.IntegrationTests.Application.Workers;
 
-public sealed class WorkerManagerTests
+[Collection("SQL Server")]
+public sealed class WorkerManagerTests(SqlServerFixture fixture) : SqlServerTest(fixture)
 {
     [Fact]
     public async Task Worker_count_can_be_scaled_and_persisted()
     {
-        string connectionString =
-            $"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared";
-        await using SqliteConnection anchorConnection = new(connectionString);
-        await anchorConnection.OpenAsync();
+        string connectionString = ConnectionString;
 
         ServiceCollection services = new();
         services.AddLogging();
@@ -32,7 +29,7 @@ public sealed class WorkerManagerTests
                 LeaseGraceSeconds = 5
             }));
         services.AddDbContext<TaskForgeDbContext>(
-            options => options.UseSqlite(connectionString));
+            options => options.UseSqlServer(connectionString));
         services.AddScoped<EfCoreJobStore>();
         services.AddScoped<IJobQueue>(
             provider => provider.GetRequiredService<EfCoreJobStore>());
@@ -45,13 +42,6 @@ public sealed class WorkerManagerTests
 
         await using ServiceProvider serviceProvider =
             services.BuildServiceProvider();
-        await using (AsyncServiceScope setupScope =
-            serviceProvider.CreateAsyncScope())
-        {
-            TaskForgeDbContext dbContext =
-                setupScope.ServiceProvider.GetRequiredService<TaskForgeDbContext>();
-            await dbContext.Database.EnsureCreatedAsync();
-        }
 
         WorkerManager manager =
             serviceProvider.GetRequiredService<WorkerManager>();
@@ -85,6 +75,21 @@ public sealed class WorkerManagerTests
             using CancellationTokenSource shutdown = new(
                 TimeSpan.FromSeconds(5));
             await manager.StopAsync(shutdown.Token);
+        }
+
+        await using ServiceProvider restartedProvider = services.BuildServiceProvider();
+        WorkerManager restartedManager = restartedProvider.GetRequiredService<WorkerManager>();
+        await restartedManager.StartAsync(CancellationToken.None);
+
+        try
+        {
+            Assert.Equal(0, restartedManager.GetSnapshot().DesiredWorkerCount);
+            Assert.Equal(0, restartedManager.GetSnapshot().ActiveWorkerCount);
+        }
+        finally
+        {
+            using CancellationTokenSource shutdown = new(TimeSpan.FromSeconds(5));
+            await restartedManager.StopAsync(shutdown.Token);
         }
     }
 
