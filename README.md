@@ -1,7 +1,7 @@
 # TaskForge v1.0
 
 TaskForge is a backend-only background job processing project built with C#,
-ASP.NET Core, SQLite, and .NET 8.
+ASP.NET Core, Microsoft SQL Server (MSSQL), and .NET 8.
 
 ## Implemented
 
@@ -13,11 +13,12 @@ ASP.NET Core, SQLite, and .NET 8.
 - Job handler contract
 - Allowlisted outbound HTTP request jobs for external integrations
 - In-process `WorkerManager` with configurable parallel workers
-- Runtime worker scaling persisted in SQLite
+- Runtime worker scaling persisted in SQL Server
 - Priority-first job acquisition, retries, timeouts, cancellation, and lease recovery
 - Idempotent submission through the `Idempotency-Key` header
 - OpenAPI JSON documentation
-- SQLite persistence with EF Core
+- SQL Server persistence with EF Core and startup migrations
+- Docker Compose development environment for the API and SQL Server 2022
 - Durable job submission, listing, and lookup
 - Health endpoint
 - Docker-independent unit tests and SQL Server integration tests
@@ -33,36 +34,88 @@ flowchart LR
     App --> Domain[TaskForge.Domain]
     App --> Repository[IJobRepository]
     Repository --> Infrastructure[TaskForge.Infrastructure]
-    Infrastructure --> DB[(SQLite)]
+    Infrastructure --> DB[(SQL Server)]
 ```
 
 ### Projects
 
 - `TaskForge.Domain`: job and worker state and lifecycle rules
 - `TaskForge.Application`: job workflows, validation, worker management, and abstractions
-- `TaskForge.Infrastructure`: EF Core mappings and SQLite persistence
+- `TaskForge.Infrastructure`: EF Core mappings, SQL Server persistence, and migrations
 - `TaskForge.Api`: HTTP endpoints, configuration, and hosting for the API and workers
 - `TaskForge.Debugging`: initial debug-only console harness configured by `debugsettings.json`
-- `TaskForge.UnitTests`: domain, application, and persistence tests
+- `TaskForge.UnitTests`: Docker-independent domain, application, handler, and debugging tests
+- `TaskForge.IntegrationTests`: SQL Server persistence and worker tests using Testcontainers
 
 ## Requirements
 
-- .NET 8 SDK or a newer SDK capable of targeting .NET 8
+- Docker with Compose v2; on Windows, run Docker Desktop in Linux container mode
+- .NET 8 SDK or a newer SDK capable of targeting .NET 8 for local builds, tests,
+  and the debugging dashboard; the Compose API build uses the SDK image
 
-## Run
+## Run with Docker Compose
 
-```bash
-dotnet restore TaskForge.sln
-dotnet build TaskForge.sln
-dotnet run --project src/TaskForge.Api
+Run these commands from the repository root. On first setup, copy the example
+environment file. Keep an existing `.env` instead of overwriting it:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-TaskForge listens on `http://localhost:8275` by default. The database is
-created at `src/TaskForge.Api/data/taskforge.db`.
+Edit `.env` and replace `ReplaceWithAStrongPassword123!` with a strong, unique
+SQL Server SA password. `.env.example` contains only a placeholder and is
+committed; the real password belongs only in `.env`, which Git and the Docker
+build context exclude.
+
+Validate the configuration without printing the interpolated password, then
+build and start the stack:
+
+```powershell
+docker compose config --quiet
+docker compose up --build
+```
+
+For background operation, use `docker compose up --build -d`. Check the services
+and API from another terminal:
+
+```powershell
+docker compose ps
+Invoke-RestMethod http://localhost:8275/api/health
+```
+
+Compose builds the API from `Dockerfile` and starts SQL Server 2022 Developer.
+The API starts after SQL Server passes its health check, then applies EF Core
+migrations to the `TaskForge` database before serving requests.
+
+The API is available at `http://localhost:8275`; Compose maps host port `8275`
+to container port `8080`. SQL Server is reachable by the API at
+`sqlserver:1433` on the Compose network and has no published host port.
+Database files live in the `sqlserver-data` named volume mounted at
+`/var/opt/mssql`, normally named `taskforge_sqlserver-data` by Compose.
 
 Port `8275` is memorable because `TASK` maps to `8275` on a telephone keypad.
-Deployments can override the address with `ASPNETCORE_URLS` or the `--urls`
-command-line option.
+
+### Stop, restart, and reset
+
+Restart only the API, or stop and remove the stack while keeping database data:
+
+```powershell
+docker compose restart api
+docker compose down
+```
+
+Starting again with `docker compose up --build -d` reuses the named volume.
+Stored jobs and the selected worker count survive container restarts and
+recreation.
+
+**The following reset command deletes the named volume and all SQL Server data,
+including jobs and worker settings. Use it only when you intend to discard the
+database.** Docker documents volume removal under
+[`docker compose down --volumes`](https://docs.docker.com/reference/cli/docker/compose/down/).
+
+```powershell
+docker compose down --volumes
+```
 
 ## API
 
@@ -87,13 +140,17 @@ curl -X POST http://localhost:8275/api/jobs \
     "type": "http-request",
     "priority": "High",
     "payload": {
-      "url": "http://localhost:8275/api/health",
+      "url": "http://localhost:8080/api/health",
       "method": "GET"
     },
     "maxRetries": 3,
     "timeoutSeconds": 30
   }'
 ```
+
+The submit request goes to host port `8275`, while the job runs inside the API
+container and calls its own port `8080`. In a job URL, `localhost` refers to the
+container running the worker.
 
 Reusing the same idempotency key with the same submission returns the original
 job. Reusing it with different job properties returns `409 Conflict`.
@@ -117,7 +174,18 @@ curl -X POST http://localhost:8275/api/jobs/JOB_ID/cancel
 ### HTTP request jobs
 
 An external project can submit an `http-request` job and let TaskForge perform
-the call asynchronously:
+the call asynchronously. For the following Docker Desktop example, start your
+callback service on host port `6000`. Add this entry to the existing
+`api.environment` mapping in `compose.yaml`, then run `docker compose up --build -d`:
+
+```yaml
+HttpRequestJobs__AllowedHosts__2: host.docker.internal
+```
+
+Docker Desktop provides
+[`host.docker.internal`](https://docs.docker.com/desktop/features/networking/networking-how-tos/)
+for container access to services running on the host. The host must also be in
+TaskForge's allowlist before submitting the job:
 
 ```bash
 curl -X POST http://localhost:8275/api/jobs \
@@ -127,7 +195,7 @@ curl -X POST http://localhost:8275/api/jobs \
     "type": "http-request",
     "priority": "Normal",
     "payload": {
-      "url": "http://localhost:6000/hooks/orders",
+      "url": "http://host.docker.internal:6000/hooks/orders",
       "method": "POST",
       "body": {
         "orderId": 123,
@@ -158,15 +226,21 @@ curl -X PUT http://localhost:8275/api/workers/count \
 ```
 
 Worker count can be set from `0` to `8`; zero pauses processing, and the selected
-count is restored from SQLite after an application restart.
+count is restored from SQL Server after an application restart.
 
 ## Configuration
 
-The SQLite connection string is configured in
-`src/TaskForge.Api/appsettings.json`. A missing database and schema are created
-when the API starts.
+Compose reads `MSSQL_SA_PASSWORD` from `.env` and supplies the API connection
+string through `ConnectionStrings__TaskForge`. The database name is `TaskForge`
+and the server is `sqlserver,1433`. The API requires an explicit connection
+string and fails at startup if it is missing or blank.
 
-Worker defaults are configured in the same file:
+Schema changes are applied with `MigrateAsync()` during API startup. Migration
+files are in `src/TaskForge.Infrastructure/Persistence/Migrations`.
+
+Worker and HTTP handler defaults are configured in
+`src/TaskForge.Api/appsettings.json` and can be overridden through the API
+service's environment variables in `compose.yaml`:
 
 ```json
 {
@@ -188,7 +262,7 @@ Worker defaults are configured in the same file:
 ```
 
 The configured count is used until a user changes it through the API; API
-changes are persisted in SQLite and take precedence on later starts.
+changes are persisted in SQL Server and take precedence on later starts.
 Retry delays grow exponentially from `RetryDelaySeconds` and stop growing at
 `MaxRetryDelaySeconds`.
 
@@ -209,7 +283,7 @@ job ID, and polls `GET /api/jobs/{id}` until the status is `Completed`,
 
 TaskForge does not accept executable code from clients; it runs only handlers
 registered by the service. The current service includes `http-request`.
-Authentication, distributed queues, plugins, and containers are intentionally
+Authentication, distributed queues, and plugins are intentionally
 outside this release.
 
 ## Testing
@@ -281,7 +355,6 @@ current scope.
 
 ## Next steps
 
-- Database migrations
 - Attempt recording
 - Authentication for untrusted networks
 - Metrics and structured error middleware
