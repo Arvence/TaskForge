@@ -20,7 +20,7 @@ ASP.NET Core, SQLite, and .NET 8.
 - SQLite persistence with EF Core
 - Durable job submission, listing, and lookup
 - Health endpoint
-- Unit and SQLite persistence tests
+- Docker-independent unit tests and SQL Server integration tests
 
 ## Architecture
 
@@ -214,8 +214,35 @@ outside this release.
 
 ## Testing
 
+Run unit tests without Docker:
+
 ```bash
-dotnet test TaskForge.sln
+dotnet test tests/TaskForge.UnitTests --configuration Release
+```
+
+Run persistence and worker database tests with Docker running in Linux container mode:
+
+```bash
+dotnet test tests/TaskForge.IntegrationTests --configuration Release
+```
+
+The integration project uses [Testcontainers.MsSql](https://dotnet.testcontainers.org/modules/mssql/)
+and an [xUnit collection fixture](https://xunit.net/docs/shared-context#collection-fixture)
+to share one SQL Server 2022 container across all tests. Each test gets a unique
+database, applies the application's EF Core migrations with `MigrateAsync()`,
+and deletes its database afterward. Testcontainers removes the container at the
+end of the run. Tests do not use the Compose database or require a local `.env`.
+
+Coverage includes competing worker acquisition, optimistic concurrency,
+idempotency constraints and concurrent submissions, retry ordering, lease
+recovery, worker-count persistence, and cancellation racing with completion.
+Save interceptors coordinate competing writes so the concurrency tests exercise
+stale versions instead of depending on timing delays.
+
+Run both projects together with Docker available:
+
+```bash
+dotnet test TaskForge.sln --configuration Release
 ```
 
 ## Debugging dashboard
@@ -256,6 +283,5 @@ current scope.
 
 - Database migrations
 - Attempt recording
-- Integration tests
 - Authentication for untrusted networks
 - Metrics and structured error middleware
