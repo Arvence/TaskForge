@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using TaskForge.Api.Jobs;
 using TaskForge.Api.Workers;
 using TaskForge.Application.Abstractions.Execution;
+using TaskForge.Application.Abstractions.Persistence;
 using TaskForge.Application.Common.Exceptions;
 using TaskForge.Application.Jobs;
 using TaskForge.Application.Jobs.Models;
@@ -92,6 +93,23 @@ app.MapGet("/api/health", () => Results.Ok(new
     Service = "TaskForge.Api",
     TimestampUtc = DateTimeOffset.UtcNow
 }));
+
+app.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, CancellationToken cancellationToken) =>
+    Results.Ok(await statisticsReader.GetAsync(cancellationToken)))
+    .WithName("GetStats")
+    .WithTags("Stats")
+    .WithSummary("Get current status counts for all stored jobs.")
+    .WithDescription(
+        "Includes every job in the database without filtering or pagination. "
+        + "Counts reflect current states, not historical transitions or attempts. Missing statuses have zero counts. "
+        + "totalJobs is the sum of all seven status counts; there is no separate Failed status. "
+        + "retrying counts jobs waiting for a retry, not retry attempts or the sum of RetryCount values. "
+        + "A processing job with cancellation requested remains in processing until its persisted status becomes Cancelled. "
+        + "Success rate is completed / (completed + deadLettered) * 100, rounded to two decimal places "
+        + "with midpoint ties away from zero; it is null when the denominator is zero. "
+        + "Pending, queued, processing, retrying, and cancelled jobs are excluded from the denominator. "
+        + "An empty database returns 200 OK with zero counts and a null success rate.")
+    .Produces<JobStatistics>(StatusCodes.Status200OK);
 
 app.MapPost("/api/jobs", async Task<IResult> (
     SubmitJobRequest request,

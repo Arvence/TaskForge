@@ -21,6 +21,7 @@ ASP.NET Core, Microsoft SQL Server (MSSQL), and .NET 8.
 - Docker Compose development environment for the API and SQL Server 2022
 - Durable job submission, listing, and lookup
 - Health endpoint
+- Statistics endpoint for current job status counts and success rate
 - Docker-independent unit tests and SQL Server integration tests
 
 ## Architecture
@@ -121,6 +122,7 @@ docker compose down --volumes
 
 ```text
 GET  /api/health
+GET  /api/stats
 GET  /openapi/v1.json
 POST /api/jobs
 GET  /api/jobs
@@ -130,7 +132,48 @@ GET  /api/workers
 PUT  /api/workers/count
 ```
 
-Submit a job:
+### Job statistics
+
+`GET /api/stats` returns `200 OK` with statistics for every job record currently
+stored in the database, with no filters, date range, or pagination. Counts reflect
+each record's current status, not historical status transitions or execution
+attempts. Each job contributes to exactly one status count.
+
+```json
+{
+  "totalJobs": 100,
+  "countsByStatus": {
+    "pending": 0,
+    "queued": 12,
+    "processing": 3,
+    "retrying": 5,
+    "completed": 70,
+    "deadLettered": 8,
+    "cancelled": 2
+  },
+  "successRatePercent": 89.74
+}
+```
+
+All counters use C# `long` (64-bit integers). All seven status fields are always
+present, including statuses with zero records. `totalJobs` is their sum.
+`successRatePercent` is `completed / (completed + deadLettered) * 100`, rounded
+to two decimal places with midpoint ties away from zero. Cancelled and unfinished
+jobs do not enter this ratio. When the denominator is zero, the rate is `null`.
+An empty database returns `200 OK`, `totalJobs: 0`, all seven status counts set
+to `0`, and `successRatePercent: null`.
+
+`retrying` counts jobs currently waiting for a retry, not the number of retry
+attempts or the sum of their `RetryCount` values. A job waiting after several
+failed attempts still contributes exactly one to `retrying`.
+
+A processing job with `CancellationRequested: true` remains in `processing`
+until its persisted status changes to `Cancelled`. Only then does it contribute
+to `cancelled`. The response uses the seven domain statuses; there is no separate
+`Failed` status. Pending, queued, processing, retrying, and cancelled jobs are
+excluded from the success-rate denominator.
+
+### Submit a job
 
 ```bash
 curl -X POST http://localhost:8275/api/jobs \
