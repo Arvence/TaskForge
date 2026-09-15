@@ -16,7 +16,7 @@ public static class SqlServerPersistenceExtensions
             options.UseSqlServer(connectionString, sqlServerOptions => sqlServerOptions.EnableRetryOnFailure()));
         services.AddScoped<EfCoreJobStore>();
         services.AddScoped<IJobRepository>(serviceProvider => serviceProvider.GetRequiredService<EfCoreJobStore>());
-        services.AddScoped<IJobStatisticsReader>(serviceProvider => serviceProvider.GetRequiredService<EfCoreJobStore>());
+        services.AddScoped<IJobStatisticsReader, EfCoreJobStatisticsReader>();
         services.AddScoped<IJobQueue>(serviceProvider => serviceProvider.GetRequiredService<EfCoreJobStore>());
         services.AddScoped<IWorkerSettingsStore, EfCoreWorkerSettingsStore>();
 

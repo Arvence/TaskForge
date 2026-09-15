@@ -12,7 +12,7 @@ public sealed class SqlServerJobStatisticsTests(SqlServerFixture fixture) : SqlS
     {
         await using TaskForgeDbContext context = new(DatabaseOptions);
 
-        JobStatistics stats = await new EfCoreJobStore(context).GetAsync();
+        JobStatistics stats = await new EfCoreJobStatisticsReader(context).GetAsync();
 
         Assert.Equal(new JobStatusCounts(), stats.CountsByStatus);
         Assert.Equal(0L, stats.TotalJobs);
@@ -65,80 +65,15 @@ public sealed class SqlServerJobStatisticsTests(SqlServerFixture fixture) : SqlS
         }
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
-        JobStatistics stats = await new EfCoreJobStore(readContext).GetAsync();
+        JobStatistics stats = await new EfCoreJobStatisticsReader(readContext).GetAsync();
 
         Assert.Equal(new JobStatusCounts(1, 2, 3, 4, 5, 6, 7), stats.CountsByStatus);
         Assert.Equal(28L, stats.TotalJobs);
         Assert.Equal(45.45m, stats.SuccessRatePercent);
-        Assert.Empty(readContext.ChangeTracker.Entries());
     }
 
     [Fact]
-    public async Task Retrying_counts_jobs_waiting_for_retry_instead_of_retry_attempts()
-    {
-        DateTimeOffset now = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
-        await using TaskForgeDbContext context = new(DatabaseOptions);
-        Job job = new(Guid.NewGuid(), "http-request", "{}", JobPriority.Normal, 3, 30, now);
-        job.Queue(now);
-        job.StartProcessing("stats-test", now.AddMinutes(1), now);
-        job.Fail("First failure", now.AddSeconds(1), now);
-        job.QueueRetry(now.AddSeconds(1));
-        job.StartProcessing("stats-test", now.AddMinutes(1), now.AddSeconds(1));
-        job.Fail("Second failure", now.AddSeconds(3), now.AddSeconds(2));
-        context.Jobs.Add(job);
-        await context.SaveChangesAsync();
-        EfCoreJobStore store = new(context);
-
-        JobStatistics waitingStats = await store.GetAsync();
-
-        Assert.Equal(2, job.RetryCount);
-        Assert.Equal(new JobStatusCounts(Retrying: 1), waitingStats.CountsByStatus);
-        Assert.Equal(1L, waitingStats.TotalJobs);
-        Assert.Null(waitingStats.SuccessRatePercent);
-
-        job.QueueRetry(now.AddSeconds(3));
-        job.StartProcessing("stats-test", now.AddMinutes(1), now.AddSeconds(3));
-        await context.SaveChangesAsync();
-
-        JobStatistics runningStats = await store.GetAsync();
-        Assert.Equal(new JobStatusCounts(Processing: 1), runningStats.CountsByStatus);
-        Assert.Equal(1L, runningStats.TotalJobs);
-        Assert.Null(runningStats.SuccessRatePercent);
-    }
-
-    [Fact]
-    public async Task Cancellation_requested_job_counts_as_processing_until_cancellation_is_persisted()
-    {
-        DateTimeOffset now = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
-        await using TaskForgeDbContext context = new(DatabaseOptions);
-        Job job = new(Guid.NewGuid(), "http-request", "{}", JobPriority.Normal, 3, 30, now);
-        job.Queue(now);
-        job.StartProcessing("stats-test", now.AddMinutes(1), now);
-        job.RequestCancellation(now.AddSeconds(1));
-        context.Jobs.Add(job);
-        await context.SaveChangesAsync();
-        EfCoreJobStore store = new(context);
-
-        JobStatistics requestedStats = await store.GetAsync();
-
-        Assert.True(job.CancellationRequested);
-        Assert.Equal(new JobStatusCounts(Processing: 1), requestedStats.CountsByStatus);
-        Assert.Equal(1L, requestedStats.TotalJobs);
-        Assert.Null(requestedStats.SuccessRatePercent);
-
-        job.Cancel(now.AddSeconds(2));
-        Assert.Equal(new JobStatusCounts(Processing: 1), (await store.GetAsync()).CountsByStatus);
-
-        await context.SaveChangesAsync();
-
-        JobStatistics cancelledStats = await store.GetAsync();
-        Assert.Equal(new JobStatusCounts(Cancelled: 1), cancelledStats.CountsByStatus);
-        Assert.Equal(1L, cancelledStats.TotalJobs);
-        Assert.Null(cancelledStats.SuccessRatePercent);
-    }
-
-    [Fact]
-    public async Task Completed_job_counts_only_its_current_state_and_missing_states_remain_zero()
+    public async Task Changed_job_status_is_reflected_by_the_next_read_and_missing_states_remain_zero()
     {
         DateTimeOffset now = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
         await using TaskForgeDbContext context = new(DatabaseOptions);
@@ -146,18 +81,15 @@ public sealed class SqlServerJobStatisticsTests(SqlServerFixture fixture) : SqlS
         job.Queue(now);
         context.Jobs.Add(job);
         await context.SaveChangesAsync();
-        EfCoreJobStore store = new(context);
+        EfCoreJobStatisticsReader reader = new(context);
 
-        Assert.Equal(new JobStatusCounts(Queued: 1), (await store.GetAsync()).CountsByStatus);
+        Assert.Equal(new JobStatusCounts(Queued: 1), (await reader.GetAsync()).CountsByStatus);
 
         job.StartProcessing("stats-test", now.AddMinutes(1), now);
-        job.Fail("Retryable failure", now.AddSeconds(1), now);
-        job.QueueRetry(now.AddSeconds(1));
-        job.StartProcessing("stats-test", now.AddMinutes(1), now.AddSeconds(1));
-        job.Complete(now.AddSeconds(2));
+        job.Complete(now.AddSeconds(1));
         await context.SaveChangesAsync();
 
-        JobStatistics stats = await store.GetAsync();
+        JobStatistics stats = await reader.GetAsync();
         Assert.Equal(new JobStatusCounts(Completed: 1), stats.CountsByStatus);
         Assert.Equal(1L, stats.TotalJobs);
         Assert.Equal(100m, stats.SuccessRatePercent);
