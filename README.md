@@ -132,6 +132,14 @@ GET  /api/workers
 PUT  /api/workers/count
 ```
 
+### API errors
+
+Unexpected API exceptions return `500 Internal Server Error` with an
+`application/problem+json` response and a generic error title. Exception details
+and stack traces are logged server-side and are not included in client responses,
+including in Development. Validation errors, missing jobs, and conflicts retain
+their existing status codes and response bodies.
+
 ### Job statistics
 
 `GET /api/stats` returns `200 OK` with statistics for every job record currently
@@ -388,6 +396,19 @@ Run both projects together with Docker available:
 dotnet test TaskForge.sln --configuration Release
 ```
 
+### Continuous integration
+
+The [CI workflow](.github/workflows/ci.yml) runs on pushes and pull requests to
+`main`, and can also be started manually from GitHub Actions. The Windows job
+restores dependencies, builds Release with .NET 8, and runs unit tests. After it
+passes, an Ubuntu job restores and builds the solution, runs MSSQL integration
+tests, and builds the API Docker image. Ubuntu provides the Linux container
+runtime required by the SQL Server test image and the API Dockerfile.
+
+Testcontainers manages SQL Server for the integration tests, so CI needs no
+repository secrets, local `.env`, or Compose setup. The Docker image is built for
+verification only; the workflow does not publish or deploy it.
+
 ## Debugging dashboard
 
 Run the API, then start the debugging project in another terminal:
@@ -426,4 +447,4 @@ current scope.
 
 - Attempt recording
 - Authentication for untrusted networks
-- Metrics and structured error middleware
+- Metrics
