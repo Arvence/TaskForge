@@ -103,6 +103,8 @@ app.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, Cancellat
         "Includes every job in the database without filtering or pagination. "
         + "Counts reflect current states, not historical transitions or attempts. Missing statuses have zero counts. "
         + "totalJobs is the sum of all seven status counts; there is no separate Failed status. "
+        + "Consecutive responses may differ while workers update jobs. "
+        + "The result does not guarantee a historical or transactionally consistent point-in-time snapshot. "
         + "retrying counts jobs waiting for a retry, not retry attempts or the sum of RetryCount values. "
         + "A processing job with cancellation requested remains in processing until its persisted status becomes Cancelled. "
         + "Success rate is completed / (completed + deadLettered) * 100, rounded to two decimal places "

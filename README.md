@@ -139,6 +139,12 @@ stored in the database, with no filters, date range, or pagination. Counts refle
 each record's current status, not historical status transitions or execution
 attempts. Each job contributes to exactly one status count.
 
+Workers may change job statuses between consecutive requests, so responses may
+differ. Each response derives `totalJobs` from its own returned status counts.
+The result does not promise a historical or transactionally consistent
+point-in-time snapshot. The query uses the database's configured isolation
+behavior without `NOLOCK` or a custom isolation-level override.
+
 ```json
 {
   "totalJobs": 100,
@@ -172,6 +178,26 @@ until its persisted status changes to `Cancelled`. Only then does it contribute
 to `cancelled`. The response uses the seven domain statuses; there is no separate
 `Failed` status. Pending, queued, processing, retrying, and cancelled jobs are
 excluded from the success-rate denominator.
+
+The aggregate reads only `Status` and `COUNT_BIG(*)` in one `GROUP BY` query.
+The existing `(Status, Priority, CreatedAtUtc)` index covers this query, with
+`Status` as its leading key. Since all jobs are counted, an index scan is expected.
+No `NOLOCK`, additional index, cache, or summary table is used. Any future index
+change must be justified by measurements and delivered in a separate migration.
+
+A local SQL Server 2022 Testcontainers check on 2026-09-14 measured **313.65 ms**
+for one reader invocation over **100,000 jobs**, with one SQL command and correct
+counts. The synthetic data included all seven statuses, four priorities, two job
+types, varied creation dates, and approximately 1 KB of Unicode JSON per row.
+The estimated plan selected `IX_Jobs_Status_Priority_CreatedAtUtc` with an
+`Index Scan` and `Stream Aggregate`. This supports keeping the existing index
+for this workload. The elapsed time includes EF query processing and result
+materialization, excludes seeding and connection opening, and was measured
+without running workers; it is not a production latency guarantee or a
+concurrent-load benchmark.
+
+This was a one-time diagnostic; the large-data performance test is not retained
+in the normal test suite.
 
 ### Submit a job
 
