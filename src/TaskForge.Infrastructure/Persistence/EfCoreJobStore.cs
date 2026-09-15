@@ -54,13 +54,6 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
         }
     }
 
-    public async Task<IReadOnlyList<Job>> GetAllAsync(CancellationToken cancellationToken = default) =>
-        await dbContext.Jobs
-            .AsNoTracking()
-            .OrderByDescending(job => job.CreatedAtUtc)
-            .ThenByDescending(job => job.Id)
-            .ToListAsync(cancellationToken);
-
     public async Task<JobPage> GetPageAsync(ListJobsQuery query, CancellationToken cancellationToken = default)
     {
         IQueryable<Job> jobs = dbContext.Jobs.AsNoTracking();
@@ -105,22 +98,6 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
             .SingleOrDefaultAsync(
                 job => job.IdempotencyKey == idempotencyKey,
                 cancellationToken);
-
-    public async Task<Job?> TryAcquireAsync(Guid id, string workerId, DateTimeOffset leaseExpiresAtUtc, DateTimeOffset now, CancellationToken cancellationToken = default)
-    {
-        Job? job = await FindAsync(id, cancellationToken);
-        if (job?.Status != JobStatus.Queued)
-        {
-            return null;
-        }
-
-        long expectedVersion = job.Version;
-        job.StartProcessing(workerId, leaseExpiresAtUtc, now);
-
-        return await TryUpdateAsync(job, expectedVersion, cancellationToken)
-            ? job
-            : null;
-    }
 
     public async Task<bool> TryUpdateAsync(Job job, long expectedVersion, CancellationToken cancellationToken = default)
     {

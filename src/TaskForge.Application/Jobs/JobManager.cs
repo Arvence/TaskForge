@@ -54,10 +54,6 @@ public sealed class JobManager(
         return new JobSubmissionResult(persistedJob, created);
     }
 
-    public Task<IReadOnlyList<Job>> GetAllAsync(
-        CancellationToken cancellationToken = default) =>
-        jobRepository.GetAllAsync(cancellationToken);
-
     public Task<JobPage> GetPageAsync(
         ListJobsQuery query,
         CancellationToken cancellationToken = default)

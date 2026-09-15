@@ -143,11 +143,9 @@ public sealed class JobManagerTests
             MaxRetries: 3,
             TimeoutSeconds: 30));
 
-        IReadOnlyList<Job> jobs = await manager.GetAllAsync();
         JobPage page = await manager.GetPageAsync(new ListJobsQuery());
         Job? foundJob = await manager.GetByIdAsync(job.Id);
 
-        Assert.Same(job, Assert.Single(jobs));
         Assert.Same(job, Assert.Single(page.Items));
         Assert.Same(job, foundJob);
     }
@@ -268,10 +266,6 @@ public sealed class JobManagerTests
             return Task.FromResult(job);
         }
 
-        public Task<IReadOnlyList<Job>> GetAllAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<Job>>(Jobs);
-
         public Task<JobPage> GetPageAsync(
             ListJobsQuery query,
             CancellationToken cancellationToken = default)
@@ -318,23 +312,6 @@ public sealed class JobManagerTests
             Task.FromResult(
                 Jobs.SingleOrDefault(
                     job => job.IdempotencyKey == idempotencyKey));
-
-        public Task<Job?> TryAcquireAsync(
-            Guid id,
-            string workerId,
-            DateTimeOffset leaseExpiresAtUtc,
-            DateTimeOffset now,
-            CancellationToken cancellationToken = default)
-        {
-            Job? job = Jobs.SingleOrDefault(candidate => candidate.Id == id);
-            if (job?.Status != JobStatus.Queued)
-            {
-                return Task.FromResult<Job?>(null);
-            }
-
-            job.StartProcessing(workerId, leaseExpiresAtUtc, now);
-            return Task.FromResult<Job?>(job);
-        }
 
         public Task<bool> TryUpdateAsync(
             Job job,

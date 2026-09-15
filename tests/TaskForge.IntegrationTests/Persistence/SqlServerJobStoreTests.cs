@@ -60,9 +60,9 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         await store.AddAsync(older);
         await store.AddAsync(newer);
 
-        IReadOnlyList<Job> jobs = await store.GetAllAsync();
+        JobPage page = await store.GetPageAsync(new ListJobsQuery());
 
-        Assert.Equal([newer.Id, older.Id], jobs.Select(job => job.Id));
+        Assert.Equal([newer.Id, older.Id], page.Items.Select(job => job.Id));
     }
 
     [Fact]
@@ -102,10 +102,8 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         Assert.Equal(olderMatch.Id, Assert.Single(result.Items).Id);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Queued_job_can_only_be_acquired_once_by_competing_workers(bool acquireNext)
+    [Fact]
+    public async Task Queued_job_can_only_be_acquired_once_by_competing_workers()
     {
         DbContextOptions<TaskForgeDbContext> options = DatabaseOptions;
 
@@ -127,12 +125,8 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         EfCoreJobStore firstStore = new(firstContext);
         EfCoreJobStore secondStore = new(secondContext);
 
-        Task<Job?> first = acquireNext
-            ? firstStore.TryAcquireNextAsync("worker-01", TimeSpan.FromSeconds(30), now)
-            : firstStore.TryAcquireAsync(job.Id, "worker-01", now.AddMinutes(1), now);
-        Task<Job?> second = acquireNext
-            ? secondStore.TryAcquireNextAsync("worker-02", TimeSpan.FromSeconds(30), now)
-            : secondStore.TryAcquireAsync(job.Id, "worker-02", now.AddMinutes(1), now);
+        Task<Job?> first = firstStore.TryAcquireNextAsync("worker-01", TimeSpan.FromSeconds(30), now);
+        Task<Job?> second = secondStore.TryAcquireNextAsync("worker-02", TimeSpan.FromSeconds(30), now);
         Job?[] results = await Task.WhenAll(first, second);
 
         Job acquired = Assert.Single(results.OfType<Job>());
