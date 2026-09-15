@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-unit-tests:
+    name: Windows build and unit tests
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Select .NET 8 for this run
+        # Override latestMajor only in the runner's checkout.
+        run: dotnet new globaljson --sdk-version 8.0.100 --roll-forward latestFeature --force
+
+      - name: Restore dependencies
+        run: dotnet restore TaskForge.sln
+
+      - name: Build Release
+        run: dotnet build TaskForge.sln --configuration Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test tests/TaskForge.UnitTests/TaskForge.UnitTests.csproj --configuration Release --no-build --no-restore
+
+  integration-and-docker:
+    name: Ubuntu integration tests and Docker build
+    needs: build-and-unit-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Select .NET 8 for this run
+        # Override latestMajor only in the runner's checkout.
+        run: dotnet new globaljson --sdk-version 8.0.100 --roll-forward latestFeature --force
+
+      - name: Restore dependencies
+        run: dotnet restore TaskForge.sln
+
+      - name: Build Release
+        run: dotnet build TaskForge.sln --configuration Release --no-restore
+
+      - name: Run MSSQL integration tests
+        run: dotnet test tests/TaskForge.IntegrationTests/TaskForge.IntegrationTests.csproj --configuration Release --no-build --no-restore
+
+      - name: Build Docker image
+        run: docker build --tag taskforge-api:ci .
