@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -30,6 +31,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddProblemDetails();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<SubmitJobValidator>();
 builder.Services.AddScoped<JobManager>();
@@ -81,6 +83,16 @@ builder.Services.AddTaskForgeSqlServer(connectionString);
 var app = builder.Build();
 
 await app.Services.InitializeTaskForgeDatabaseAsync();
+
+app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
+{
+    Exception? exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+    int statusCode = exception is BadHttpRequestException badRequest
+        ? badRequest.StatusCode
+        : StatusCodes.Status500InternalServerError;
+
+    await Results.Problem(statusCode: statusCode).ExecuteAsync(context);
+}));
 
 app.UseSwagger(options =>
     options.RouteTemplate = "openapi/{documentName}.json");
