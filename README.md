@@ -371,7 +371,8 @@ Run unit tests without Docker:
 dotnet test tests/TaskForge.UnitTests --configuration Release
 ```
 
-Run persistence and worker database tests with Docker running in Linux container mode:
+Run persistence, worker, and HTTP API tests with the .NET 8 SDK installed and
+Docker running in Linux container mode:
 
 ```bash
 dotnet test tests/TaskForge.IntegrationTests --configuration Release
@@ -389,6 +390,16 @@ idempotency constraints and concurrent submissions, retry ordering, lease
 recovery, worker-count persistence, and cancellation racing with completion.
 Save interceptors coordinate competing writes so the concurrency tests exercise
 stale versions instead of depending on timing delays.
+
+HTTP contract tests use `WebApplicationFactory` with the same SQL Server
+fixture and isolated databases. They cover job submission, invalid requests,
+missing jobs, idempotency replay/conflict, statistics, and cancellation. Workers
+are configured with a count of zero to keep submitted jobs stable during assertions.
+Run only these tests with Docker available:
+
+```bash
+dotnet test tests/TaskForge.IntegrationTests --configuration Release --filter FullyQualifiedName~ApiContractTests
+```
 
 Run both projects together with Docker available:
 

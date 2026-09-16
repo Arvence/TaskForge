@@ -279,3 +279,7 @@ app.MapPut("/api/workers/count", async Task<IResult> (
     .ProducesValidationProblem();
 
 app.Run();
+
+public partial class Program
+{
+}
