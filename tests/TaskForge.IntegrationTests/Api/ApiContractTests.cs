@@ -5,6 +5,11 @@ using System.Text.Json;
 
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+
+using TaskForge.Infrastructure.Persistence;
 
 namespace TaskForge.IntegrationTests.Api;
 
@@ -136,6 +141,42 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal(id, cancelled.GetProperty("id").GetGuid());
         Assert.Equal("Cancelled", cancelled.GetProperty("status").GetString());
         Assert.True(cancelled.GetProperty("cancellationRequested").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Readiness_returns_ok_when_database_is_available()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+
+        using HttpResponseMessage response = await client.GetAsync("/api/ready");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("{\"status\":\"Ready\"}", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Readiness_returns_service_unavailable_without_details_while_liveness_stays_healthy()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory().WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services => services.RemoveAll<IHostedService>()));
+        using HttpClient client = factory.CreateClient();
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        await context.Database.EnsureDeletedAsync();
+
+        using HttpResponseMessage readiness = await client.GetAsync("/api/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, readiness.StatusCode);
+        Assert.Equal("application/json", readiness.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("{\"status\":\"Unavailable\"}", await readiness.Content.ReadAsStringAsync());
+
+        using HttpResponseMessage liveness = await client.GetAsync("/api/health");
+        Assert.Equal(HttpStatusCode.OK, liveness.StatusCode);
+        JsonElement health = await liveness.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Healthy", health.GetProperty("status").GetString());
+        Assert.Equal("TaskForge.Api", health.GetProperty("service").GetString());
+        Assert.NotEqual(default, health.GetProperty("timestampUtc").GetDateTimeOffset());
     }
 
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>

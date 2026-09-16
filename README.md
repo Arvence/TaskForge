@@ -122,6 +122,7 @@ docker compose down --volumes
 
 ```text
 GET  /api/health
+GET  /api/ready
 GET  /api/stats
 GET  /openapi/v1.json
 POST /api/jobs
@@ -131,6 +132,13 @@ POST /api/jobs/{id}/cancel
 GET  /api/workers
 PUT  /api/workers/count
 ```
+
+`GET /api/health` is a basic application liveness check and does not query the
+database. `GET /api/ready` uses EF Core's `CanConnectAsync()` to check connectivity
+to the configured SQL Server database. It returns `200 OK` with
+`{"status":"Ready"}` when available, or `503 Service Unavailable` with
+`{"status":"Unavailable"}` otherwise. Responses contain no connection details
+or exception information. Startup still requires the database to apply migrations.
 
 ### API errors
 
@@ -393,7 +401,8 @@ stale versions instead of depending on timing delays.
 
 HTTP contract tests use `WebApplicationFactory` with the same SQL Server
 fixture and isolated databases. They cover job submission, invalid requests,
-missing jobs, idempotency replay/conflict, statistics, and cancellation. Workers
+missing jobs, idempotency replay/conflict, statistics, cancellation, and database
+readiness while preserving liveness when the database is unavailable. Workers
 are configured with a count of zero to keep submitted jobs stable during assertions.
 Run only these tests with Docker available:
 

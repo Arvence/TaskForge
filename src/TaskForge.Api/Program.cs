@@ -106,6 +106,19 @@ app.MapGet("/api/health", () => Results.Ok(new
     TimestampUtc = DateTimeOffset.UtcNow
 }));
 
+app.MapGet("/api/ready", async (TaskForgeDbContext dbContext, CancellationToken cancellationToken) =>
+{
+    bool ready = await dbContext.Database.CanConnectAsync(cancellationToken);
+    return Results.Json(
+        new { Status = ready ? "Ready" : "Unavailable" },
+        statusCode: ready ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
+})
+    .WithName("GetReadiness")
+    .WithTags("Health")
+    .WithSummary("Check connectivity to the configured SQL Server database.")
+    .Produces(StatusCodes.Status200OK)
+    .Produces(StatusCodes.Status503ServiceUnavailable);
+
 app.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, CancellationToken cancellationToken) =>
     Results.Ok(await statisticsReader.GetAsync(cancellationToken)))
     .WithName("GetStats")
