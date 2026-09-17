@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 using TaskForge.Infrastructure.Persistence;
+using TaskForge.Domain.Jobs;
 
 namespace TaskForge.IntegrationTests.Api;
 
@@ -177,6 +178,67 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal("Healthy", health.GetProperty("status").GetString());
         Assert.Equal("TaskForge.Api", health.GetProperty("service").GetString());
         Assert.NotEqual(default, health.GetProperty("timestampUtc").GetDateTimeOffset());
+    }
+
+    [Fact]
+    public async Task Get_attempts_returns_not_found_for_missing_job_and_empty_array_for_unexecuted_job()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        Guid missingId = Guid.NewGuid();
+
+        using HttpResponseMessage missing = await client.GetAsync($"/api/jobs/{missingId}/attempts");
+
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        JsonElement error = await missing.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal($"Job '{missingId}' was not found.", error.GetProperty("message").GetString());
+        using HttpResponseMessage submission = await client.PostAsJsonAsync("/api/jobs", ValidJob());
+        JsonElement job = await submission.Content.ReadFromJsonAsync<JsonElement>();
+        Guid id = job.GetProperty("id").GetGuid();
+        using HttpResponseMessage response = await client.GetAsync($"/api/jobs/{id}/attempts");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("[]", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Get_attempts_returns_ordered_public_fields_for_only_the_requested_job()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        using HttpResponseMessage submission = await client.PostAsJsonAsync("/api/jobs", ValidJob());
+        Guid jobId = (await submission.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        DateTimeOffset start = new(2026, 9, 17, 12, 0, 0, TimeSpan.Zero);
+        JobAttempt first = new(Guid.NewGuid(), jobId, 1, "worker-01", start);
+        first.Finish(JobAttemptOutcome.Failed, start.AddMilliseconds(750), "RequestFailure", "The request failed.");
+        JobAttempt second = new(Guid.NewGuid(), jobId, 2, "worker-02", start.AddSeconds(5));
+        await using (TaskForgeDbContext context = new(DatabaseOptions))
+        {
+            Job unrelated = new(Guid.NewGuid(), "example", "{}", JobPriority.Normal, 0, 5, start);
+            context.Jobs.Add(unrelated);
+            context.JobAttempts.AddRange(second, first, new JobAttempt(Guid.NewGuid(), unrelated.Id, 1, "other-worker", start));
+            await context.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage response = await client.GetAsync($"/api/jobs/{jobId}/attempts");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        JsonElement[] attempts = (await response.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray().ToArray();
+        Assert.Equal([1, 2], attempts.Select(attempt => attempt.GetProperty("attemptNumber").GetInt32()));
+        Assert.All(attempts, attempt => Assert.Equal(jobId, attempt.GetProperty("jobId").GetGuid()));
+        Assert.Equal("Failed", attempts[0].GetProperty("outcome").GetString());
+        Assert.Equal("worker-01", attempts[0].GetProperty("workerId").GetString());
+        Assert.Equal(start, attempts[0].GetProperty("startedAtUtc").GetDateTimeOffset());
+        Assert.Equal(start.AddMilliseconds(750), attempts[0].GetProperty("finishedAtUtc").GetDateTimeOffset());
+        Assert.Equal(750, attempts[0].GetProperty("durationMilliseconds").GetInt64());
+        Assert.Equal("RequestFailure", attempts[0].GetProperty("errorCode").GetString());
+        Assert.Equal("The request failed.", attempts[0].GetProperty("errorMessage").GetString());
+        Assert.Equal("Running", attempts[1].GetProperty("outcome").GetString());
+        Assert.Equal(JsonValueKind.Null, attempts[1].GetProperty("finishedAtUtc").ValueKind);
+        Assert.Equal(JsonValueKind.Null, attempts[1].GetProperty("durationMilliseconds").ValueKind);
+        Assert.Equal(JsonValueKind.Null, attempts[1].GetProperty("errorMessage").ValueKind);
+        Assert.Equal(9, attempts[0].EnumerateObject().Count());
+        Assert.False(attempts[0].TryGetProperty("id", out _));
     }
 
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>

@@ -226,6 +226,19 @@ app.MapGet("/api/jobs/{id:guid}", async Task<IResult> (
     .Produces<JobResponse>()
     .Produces(StatusCodes.Status404NotFound);
 
+app.MapGet("/api/jobs/{id:guid}/attempts", async Task<IResult> (Guid id, IJobAttemptReader attemptReader, CancellationToken cancellationToken) =>
+{
+    IReadOnlyList<JobAttempt>? attempts = await attemptReader.GetAttemptsAsync(id, cancellationToken);
+    return attempts is null
+        ? Results.NotFound(new { Message = $"Job '{id}' was not found." })
+        : Results.Ok(attempts.Select(JobAttemptResponse.From).ToArray());
+})
+    .WithName("GetJobAttempts")
+    .WithTags("Jobs")
+    .WithSummary("Get execution attempts in ascending attempt-number order.")
+    .Produces<JobAttemptResponse[]>()
+    .Produces(StatusCodes.Status404NotFound);
+
 app.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (
     Guid id,
     JobCancellationService cancellationService,
