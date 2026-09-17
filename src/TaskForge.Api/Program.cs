@@ -30,7 +30,11 @@ if (string.IsNullOrWhiteSpace(connectionString))
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options => options.SwaggerDoc("v1", new()
+{
+    Title = "TaskForge.Api",
+    Version = typeof(Program).Assembly.GetName().Version!.ToString(3)
+}));
 builder.Services.AddProblemDetails();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<SubmitJobValidator>();
