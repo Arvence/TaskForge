@@ -33,7 +33,8 @@ try
         BaseAddress = settings.GetApiBaseUri(),
         Timeout = TimeSpan.FromSeconds(10)
     };
-    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("TaskForge.Debugging/1.0");
+    string version = typeof(DebugSettings).Assembly.GetName().Version!.ToString(3);
+    httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"TaskForge.Debugging/{version}");
 
     TaskForgeDebugClient client = new(httpClient);
     DebugConsole console = new(!Console.IsOutputRedirected);
