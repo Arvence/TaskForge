@@ -17,6 +17,11 @@ handler sends HTTP requests to allowlisted hosts.
 ## Architecture / Request Flow
 
 ```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
 flowchart LR
     Client --> API["TaskForge.Api"]
     API --> App["TaskForge.Application"]
@@ -38,20 +43,24 @@ handler, and persist the result and attempt history.
 ## Job Lifecycle
 
 ```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Pending
-    Pending --> Queued: Submit
-    Queued --> Processing: Acquire
-    Processing --> Completed: Success
-    Processing --> Retrying: Retryable failure or timeout
-    Retrying --> Queued: Retry due
-    Processing --> DeadLettered: Permanent failure or retries exhausted
-    Processing --> Queued: Lease expired
-    Pending --> Cancelled: Cancel
-    Queued --> Cancelled: Cancel
-    Retrying --> Cancelled: Cancel
-    Processing --> Cancelled: Cancellation confirmed
+---
+config:
+  flowchart:
+    curve: linear
+---
+flowchart LR
+    Start((Start)) --> Pending
+    Pending -->|Submit| Queued
+    Queued -->|Acquire| Processing
+    Processing -->|Success| Completed
+    Processing -->|Retryable failure or timeout| Retrying
+    Retrying -->|Retry due| Queued
+    Processing -->|Permanent failure or retries exhausted| DeadLettered
+    Processing -->|Lease expired| Queued
+    Pending -->|Cancel| Cancelled
+    Queued -->|Cancel| Cancelled
+    Retrying -->|Cancel| Cancelled
+    Processing -->|Cancellation confirmed| Cancelled
 ```
 
 `Pending` is the initial domain state; accepted submissions are stored as
