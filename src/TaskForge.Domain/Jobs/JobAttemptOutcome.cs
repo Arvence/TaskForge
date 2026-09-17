@@ -7,5 +7,6 @@ public enum JobAttemptOutcome
     Failed = 2,
     TimedOut = 3,
     Cancelled = 4,
-    Abandoned = 5
+    Abandoned = 5,
+    PermanentlyFailed = 6
 }

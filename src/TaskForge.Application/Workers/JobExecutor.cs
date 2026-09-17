@@ -6,167 +6,138 @@ using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Application.Workers;
 
-public sealed class JobExecutor(
-    IJobQueue jobQueue,
-    IEnumerable<IJobHandler> handlers,
-    JobCancellationRegistry cancellationRegistry,
-    TimeProvider timeProvider,
-    IOptions<WorkerOptions> options,
-    ILogger<JobExecutor> logger)
+public sealed class JobExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> handlers, JobCancellationRegistry cancellationRegistry, TimeProvider timeProvider, IOptions<WorkerOptions> options, ILogger<JobExecutor> logger)
 {
-    private const int MaxErrorLength = 4000;
     private readonly IReadOnlyDictionary<string, IJobHandler> _handlers =
-        handlers.ToDictionary(
-            handler => handler.JobType,
-            StringComparer.OrdinalIgnoreCase);
+        handlers.ToDictionary(handler => handler.JobType, StringComparer.OrdinalIgnoreCase);
     private readonly WorkerOptions _options = options.Value;
 
-    public async Task<bool> ProcessNextAsync(
-        string workerId,
-        Action<Guid?> currentJobChanged,
-        CancellationToken acquisitionToken,
-        CancellationToken executionStoppingToken)
+    public async Task<bool> ProcessNextAsync(string workerId, Action<Guid?> currentJobChanged, CancellationToken acquisitionToken, CancellationToken executionStoppingToken)
     {
         DateTimeOffset now = timeProvider.GetUtcNow();
-        int recoveredJobs = await jobQueue.RecoverExpiredLeasesAsync(
-            now,
-            acquisitionToken);
-
+        int recoveredJobs = await jobQueue.RecoverExpiredLeasesAsync(now, acquisitionToken);
         if (recoveredJobs > 0)
         {
-            logger.LogWarning(
-                "Recovered {RecoveredJobCount} job(s) with expired worker leases.",
-                recoveredJobs);
+            logger.LogWarning("Recovered {RecoveredJobCount} job(s) with expired worker leases.", recoveredJobs);
         }
 
-        Job? job = await jobQueue.TryAcquireNextAsync(
-            workerId,
-            TimeSpan.FromSeconds(_options.LeaseGraceSeconds),
-            now,
-            acquisitionToken);
-
+        Job? job = await jobQueue.TryAcquireNextAsync(workerId, TimeSpan.FromSeconds(_options.LeaseGraceSeconds), now, acquisitionToken);
         if (job is null)
         {
             return false;
         }
 
         currentJobChanged(job.Id);
-        using JobCancellationRegistry.Registration cancellation =
-            cancellationRegistry.Register(job.Id);
-
+        using JobCancellationRegistry.Registration cancellation = cancellationRegistry.Register(job.Id);
         try
         {
-            if (await jobQueue.IsCancellationRequestedAsync(
-                    job.Id,
-                    executionStoppingToken))
+            if (await jobQueue.IsCancellationRequestedAsync(job.Id, executionStoppingToken))
             {
                 cancellationRegistry.Cancel(job.Id);
                 await CancelAsync(job.Id);
                 return true;
             }
 
-            logger.LogInformation(
-                "Worker {WorkerId} started job {JobId} of type {JobType}.",
-                workerId,
-                job.Id,
-                job.Type);
-
             if (!_handlers.TryGetValue(job.Type, out IJobHandler? handler))
             {
-                await DeadLetterAsync(
-                    job,
-                    $"No handler is registered for job type '{job.Type}'.",
-                    executionStoppingToken);
+                long version = job.Version;
+                job.DeadLetter($"No handler is registered for job type '{job.Type}'.", timeProvider.GetUtcNow());
+                await PersistTransitionAsync(job, version, null, executionStoppingToken);
                 return true;
             }
 
-            using CancellationTokenSource timeout = new(
-                TimeSpan.FromSeconds(job.TimeoutSeconds));
-            using CancellationTokenSource execution = CancellationTokenSource
-                .CreateLinkedTokenSource(
-                    executionStoppingToken,
-                    timeout.Token,
-                    cancellation.Token);
+            JobAttempt? attempt = await jobQueue.TryStartAttemptAsync(job, timeProvider.GetUtcNow(), executionStoppingToken);
+            if (attempt is null)
+            {
+                return true;
+            }
+
+            logger.LogInformation("Worker {WorkerId} started job {JobId} attempt {AttemptNumber}.", workerId, job.Id, attempt.AttemptNumber);
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(job.TimeoutSeconds));
+            using CancellationTokenSource execution = CancellationTokenSource.CreateLinkedTokenSource(executionStoppingToken, timeout.Token, cancellation.Token);
+            string? resultJson = null;
+            JobAttemptOutcome outcome;
+            string? errorCode = null;
+            string? errorMessage = null;
 
             try
             {
-                string? resultJson = await handler.HandleAsync(
-                    job.PayloadJson,
-                    execution.Token);
-
-                DateTimeOffset completedAt = timeProvider.GetUtcNow();
-                if (cancellation.Token.IsCancellationRequested
-                    || await jobQueue.IsCancellationRequestedAsync(
-                        job.Id,
-                        executionStoppingToken))
-                {
-                    await CancelAsync(job.Id);
-                    return true;
-                }
-
-                long expectedVersion = job.Version;
-                job.Complete(resultJson, completedAt);
-
-                bool completed = await PersistTransitionAsync(
-                    job,
-                    expectedVersion,
-                    "complete",
-                    executionStoppingToken);
-
-                if (!completed
-                    && await jobQueue.IsCancellationRequestedAsync(
-                        job.Id,
-                        CancellationToken.None))
-                {
-                    await CancelAsync(job.Id);
-                }
+                resultJson = await handler.HandleAsync(job.PayloadJson, execution.Token);
+                outcome = JobAttemptOutcome.Succeeded;
             }
-            catch (OperationCanceledException)
-                when (cancellation.Token.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellation.Token.IsCancellationRequested)
             {
-                await CancelAsync(job.Id);
+                outcome = JobAttemptOutcome.Cancelled;
+                errorCode = "CancellationRequested";
+                errorMessage = "Job cancellation was requested.";
             }
-            catch (OperationCanceledException)
-                when (executionStoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (executionStoppingToken.IsCancellationRequested)
             {
-                logger.LogInformation(
-                    "Worker {WorkerId} stopped while processing job {JobId}; "
-                    + "the job will be recovered when its lease expires.",
-                    workerId,
-                    job.Id);
+                outcome = JobAttemptOutcome.Abandoned;
+                errorCode = "HostStopping";
+                errorMessage = "The worker stopped before the attempt finished.";
             }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
-                await FailAsync(
-                    job,
-                    $"Job timed out after {job.TimeoutSeconds} second(s).",
-                    CancellationToken.None);
+                outcome = JobAttemptOutcome.TimedOut;
+                errorCode = "Timeout";
+                errorMessage = $"Job timed out after {job.TimeoutSeconds} second(s).";
             }
             catch (NonRetryableJobException exception)
             {
-                logger.LogWarning(
-                    exception,
-                    "Job {JobId} failed permanently in worker {WorkerId}.",
-                    job.Id,
-                    workerId);
-
-                await DeadLetterAsync(
-                    job,
-                    $"{exception.GetType().Name}: {exception.Message}",
-                    executionStoppingToken);
+                outcome = JobAttemptOutcome.PermanentlyFailed;
+                errorCode = exception.GetType().Name;
+                errorMessage = exception.Message;
+                logger.LogWarning(exception, "Job {JobId} failed permanently in worker {WorkerId}.", job.Id, workerId);
             }
             catch (Exception exception)
             {
-                logger.LogError(
-                    exception,
-                    "Job {JobId} failed in worker {WorkerId}.",
-                    job.Id,
-                    workerId);
+                outcome = JobAttemptOutcome.Failed;
+                errorCode = exception.GetType().Name;
+                errorMessage = exception.Message;
+                logger.LogError(exception, "Job {JobId} failed in worker {WorkerId}.", job.Id, workerId);
+            }
 
-                await FailAsync(
-                    job,
-                    $"{exception.GetType().Name}: {exception.Message}",
-                    executionStoppingToken);
+            DateTimeOffset finishedAt = timeProvider.GetUtcNow();
+            if (cancellation.Token.IsCancellationRequested || await jobQueue.IsCancellationRequestedAsync(job.Id, CancellationToken.None))
+            {
+                await CancelAsync(job.Id, attempt.Id);
+                return true;
+            }
+
+            attempt.Finish(outcome, finishedAt, errorCode, errorMessage);
+            if (outcome == JobAttemptOutcome.Abandoned)
+            {
+                await jobQueue.FinishAttemptAsync(attempt, CancellationToken.None);
+                logger.LogInformation("Worker {WorkerId} stopped while processing job {JobId}; the job will be recovered when its lease expires.", workerId, job.Id);
+                return true;
+            }
+
+            long expectedVersion = job.Version;
+            if (outcome == JobAttemptOutcome.Succeeded)
+            {
+                job.Complete(resultJson, finishedAt);
+            }
+            else if (outcome == JobAttemptOutcome.PermanentlyFailed)
+            {
+                job.DeadLetter(FormatError(attempt), finishedAt);
+            }
+            else
+            {
+                job.Fail(FormatError(attempt), finishedAt.Add(GetRetryDelay(job)), finishedAt);
+            }
+
+            bool persisted = await PersistTransitionAsync(job, expectedVersion, attempt, CancellationToken.None);
+            if (!persisted)
+            {
+                if (await jobQueue.IsCancellationRequestedAsync(job.Id, CancellationToken.None))
+                {
+                    await CancelAsync(job.Id, attempt.Id);
+                }
+                else
+                {
+                    await jobQueue.FinishAttemptAsync(attempt, CancellationToken.None);
+                }
             }
 
             return true;
@@ -177,25 +148,6 @@ public sealed class JobExecutor(
         }
     }
 
-    private async Task FailAsync(
-        Job job,
-        string error,
-        CancellationToken cancellationToken)
-    {
-        DateTimeOffset failedAt = timeProvider.GetUtcNow();
-        long expectedVersion = job.Version;
-        job.Fail(
-            Truncate(error),
-            failedAt.Add(GetRetryDelay(job)),
-            failedAt);
-
-        await PersistTransitionAsync(
-            job,
-            expectedVersion,
-            job.Status == JobStatus.Retrying ? "schedule for retry" : "dead-letter",
-            cancellationToken);
-    }
-
     private TimeSpan GetRetryDelay(Job job)
     {
         int exponent = Math.Min(job.RetryCount, 30);
@@ -204,60 +156,29 @@ public sealed class JobExecutor(
         return TimeSpan.FromSeconds(delaySeconds);
     }
 
-    private async Task DeadLetterAsync(
-        Job job,
-        string error,
-        CancellationToken cancellationToken)
+    private async Task<bool> PersistTransitionAsync(Job job, long expectedVersion, JobAttempt? attempt, CancellationToken cancellationToken)
     {
-        long expectedVersion = job.Version;
-        job.DeadLetter(Truncate(error), timeProvider.GetUtcNow());
-        await PersistTransitionAsync(
-            job,
-            expectedVersion,
-            "dead-letter",
-            cancellationToken);
-    }
-
-    private async Task<bool> PersistTransitionAsync(
-        Job job,
-        long expectedVersion,
-        string transition,
-        CancellationToken cancellationToken)
-    {
-        if (!await jobQueue.TryUpdateAsync(
-                job,
-                expectedVersion,
-                cancellationToken))
+        if (!await jobQueue.TryUpdateAsync(job, expectedVersion, cancellationToken, attempt))
         {
-            logger.LogWarning(
-                "Could not {Transition} job {JobId} because it was updated concurrently.",
-                transition,
-                job.Id);
+            logger.LogWarning("Could not persist job {JobId} as {JobStatus} because it was updated concurrently.", job.Id, job.Status);
             return false;
         }
 
-        logger.LogInformation(
-            "Job {JobId} is now {JobStatus}.",
-            job.Id,
-            job.Status);
+        logger.LogInformation("Job {JobId} is now {JobStatus}.", job.Id, job.Status);
         return true;
     }
 
-    private async Task CancelAsync(Guid jobId)
+    private async Task CancelAsync(Guid jobId, Guid? attemptId = null)
     {
-        if (!await jobQueue.TryCancelProcessingAsync(
-                jobId,
-                timeProvider.GetUtcNow(),
-                CancellationToken.None))
+        if (!await jobQueue.TryCancelProcessingAsync(jobId, timeProvider.GetUtcNow(), CancellationToken.None, attemptId))
         {
-            logger.LogWarning(
-                "Could not mark cancelled job {JobId} as cancelled.",
-                jobId);
+            logger.LogWarning("Could not mark cancelled job {JobId} as cancelled.", jobId);
         }
     }
 
-    private static string Truncate(string value) =>
-        value.Length <= MaxErrorLength
-            ? value
-            : value[..MaxErrorLength];
+    private static string FormatError(JobAttempt attempt)
+    {
+        string error = $"{attempt.ErrorCode}: {attempt.ErrorMessage}";
+        return error.Length <= 4000 ? error : error[..4000];
+    }
 }

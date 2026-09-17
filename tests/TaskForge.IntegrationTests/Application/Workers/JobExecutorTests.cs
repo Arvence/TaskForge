@@ -29,9 +29,11 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
         EfCoreJobStore store = new(workerContext);
+        AdjustableTimeProvider clock = new(Now);
         JobExecutor executor = CreateExecutor(
             store,
-            [new SuccessfulJobHandler()]);
+            [new SuccessfulJobHandler(() => clock.SetUtcNow(Now.AddMilliseconds(250)))],
+            timeProvider: clock);
         Guid? currentJobId = null;
 
         bool processed = await executor.ProcessNextAsync(
@@ -46,6 +48,14 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.NotNull(persistedJob);
         Assert.Equal(JobStatus.Completed, persistedJob.Status);
         Assert.Null(persistedJob.OwningWorkerId);
+        JobAttempt attempt = Assert.Single(await ReadAttemptsAsync(job.Id));
+        Assert.Equal(1, attempt.AttemptNumber);
+        Assert.Equal("worker-01", attempt.WorkerId);
+        Assert.Equal(Now, attempt.StartedAtUtc);
+        Assert.Equal(Now.AddMilliseconds(250), attempt.FinishedAtUtc);
+        Assert.Equal(250, attempt.DurationMilliseconds);
+        Assert.Equal(JobAttemptOutcome.Succeeded, attempt.Outcome);
+        Assert.Null(attempt.ErrorMessage);
     }
 
     [Fact]
@@ -71,6 +81,7 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.NotNull(persistedJob);
         Assert.Equal(JobStatus.DeadLettered, persistedJob.Status);
         Assert.Contains("No handler", persistedJob.LastError);
+        Assert.Empty(await ReadAttemptsAsync(job.Id));
     }
 
     [Fact]
@@ -100,6 +111,11 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal(1, persistedJob.RetryCount);
         Assert.Equal(Now.AddSeconds(5), persistedJob.NextRetryAtUtc);
         Assert.Contains("Expected failure", persistedJob.LastError);
+        JobAttempt attempt = Assert.Single(await ReadAttemptsAsync(job.Id));
+        Assert.Equal(JobAttemptOutcome.Failed, attempt.Outcome);
+        Assert.Equal("InvalidOperationException", attempt.ErrorCode);
+        Assert.Equal("Expected failure.", attempt.ErrorMessage);
+        Assert.NotNull(attempt.FinishedAtUtc);
     }
 
     [Fact]
@@ -129,6 +145,10 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal(0, persistedJob.RetryCount);
         Assert.Null(persistedJob.NextRetryAtUtc);
         Assert.Contains("Permanent failure", persistedJob.LastError);
+        JobAttempt attempt = Assert.Single(await ReadAttemptsAsync(job.Id));
+        Assert.Equal(JobAttemptOutcome.PermanentlyFailed, attempt.Outcome);
+        Assert.Equal("NonRetryableJobException", attempt.ErrorCode);
+        Assert.Equal("Permanent failure.", attempt.ErrorMessage);
     }
 
     [Fact]
@@ -192,6 +212,13 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.NotNull(thirdFailure);
         Assert.Equal(3, thirdFailure.RetryCount);
         Assert.Equal(Now.AddSeconds(27), thirdFailure.NextRetryAtUtc);
+
+        clock.SetUtcNow(Now.AddSeconds(27));
+        Job? finalFailure = await ProcessFailingJobAsync(databaseOptions, job.Id, clock, options);
+        Assert.Equal(JobStatus.DeadLettered, finalFailure!.Status);
+        IReadOnlyList<JobAttempt> attempts = await ReadAttemptsAsync(job.Id);
+        Assert.Equal([1, 2, 3, 4], attempts.Select(attempt => attempt.AttemptNumber));
+        Assert.All(attempts, attempt => Assert.Equal(JobAttemptOutcome.Failed, attempt.Outcome));
     }
 
     [Fact]
@@ -223,6 +250,11 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
             CancellationToken.None);
         await handler.Started.WaitAsync(TimeSpan.FromSeconds(30));
 
+        JobAttempt running = Assert.Single(await ReadAttemptsAsync(job.Id));
+        Assert.Equal(JobAttemptOutcome.Running, running.Outcome);
+        Assert.Null(running.FinishedAtUtc);
+        Assert.Null(running.DurationMilliseconds);
+
         await using TaskForgeDbContext apiContext = new(databaseOptions);
         JobCancellationService cancellationService = new(
             new EfCoreJobStore(apiContext),
@@ -239,6 +271,7 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal(JobStatus.Cancelled, persistedJob.Status);
         Assert.True(persistedJob.CancellationRequested);
         Assert.True(handler.WasCancelled);
+        Assert.Equal(JobAttemptOutcome.Cancelled, Assert.Single(await ReadAttemptsAsync(job.Id)).Outcome);
     }
 
     [Fact]
@@ -278,7 +311,103 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Null(persisted.CompletedAtUtc);
         Assert.Null(persisted.OwningWorkerId);
         Assert.Null(persisted.LeaseExpiresAtUtc);
-        Assert.Equal(job.Version + 3, persisted.Version);
+        Assert.Equal(job.Version + 4, persisted.Version);
+        JobAttempt attempt = Assert.Single(await ReadAttemptsAsync(job.Id));
+        Assert.Equal(JobAttemptOutcome.Cancelled, attempt.Outcome);
+        Assert.Equal("CancellationRequested", attempt.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Actual_job_timeout_records_timed_out_attempt()
+    {
+        Job job = new(Guid.NewGuid(), "blocking", "{}", JobPriority.Normal, 1, 1, DateTimeOffset.UtcNow);
+        job.Queue(DateTimeOffset.UtcNow);
+        await AddJobAsync(DatabaseOptions, job);
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        EfCoreJobStore store = new(context);
+        JobExecutor executor = CreateExecutor(store, [new BlockingJobHandler()], timeProvider: TimeProvider.System);
+
+        await executor.ProcessNextAsync("worker-timeout", _ => { }, CancellationToken.None, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+
+        JobAttempt attempt = Assert.Single(await ReadAttemptsAsync(job.Id));
+        Assert.Equal(JobAttemptOutcome.TimedOut, attempt.Outcome);
+        Assert.Equal("Timeout", attempt.ErrorCode);
+        Assert.Equal("Job timed out after 1 second(s).", attempt.ErrorMessage);
+        Assert.True(attempt.DurationMilliseconds >= 900);
+        Assert.Equal(JobStatus.Retrying, (await store.FindAsync(job.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Host_shutdown_records_abandoned_attempt_and_preserves_lease_recovery()
+    {
+        Job job = CreateQueuedJob("blocking", "{}", 1);
+        await AddJobAsync(DatabaseOptions, job);
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        EfCoreJobStore store = new(context);
+        BlockingJobHandler handler = new();
+        using CancellationTokenSource stopping = new();
+        JobExecutor executor = CreateExecutor(store, [handler]);
+        Task<bool> execution = executor.ProcessNextAsync("worker-stopping", _ => { }, CancellationToken.None, stopping.Token);
+        await handler.Started.WaitAsync(TimeSpan.FromSeconds(30));
+
+        stopping.Cancel();
+        await execution.WaitAsync(TimeSpan.FromSeconds(30));
+
+        JobAttempt attempt = Assert.Single(await ReadAttemptsAsync(job.Id));
+        Assert.Equal(JobAttemptOutcome.Abandoned, attempt.Outcome);
+        Assert.Equal("HostStopping", attempt.ErrorCode);
+        Assert.NotNull(attempt.FinishedAtUtc);
+        Assert.Equal(JobStatus.Processing, (await store.FindAsync(job.Id))!.Status);
+        await using TaskForgeDbContext recoveryContext = new(DatabaseOptions);
+        Assert.Equal(1, await new EfCoreJobStore(recoveryContext).RecoverExpiredLeasesAsync(Now.AddMinutes(1)));
+        Assert.Equal("HostStopping", Assert.Single(await ReadAttemptsAsync(job.Id)).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Queued_cancellation_and_empty_queue_do_not_create_attempts()
+    {
+        Job job = CreateQueuedJob("successful", "{}", 1);
+        job.RequestCancellation(Now);
+        await AddJobAsync(DatabaseOptions, job);
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        JobExecutor executor = CreateExecutor(new EfCoreJobStore(context), [new SuccessfulJobHandler()]);
+
+        Assert.False(await executor.ProcessNextAsync("worker-01", _ => { }, CancellationToken.None, CancellationToken.None));
+        Assert.Empty(await ReadAttemptsAsync(job.Id));
+    }
+
+    [Fact]
+    public async Task Successful_retry_keeps_the_previous_failure_and_records_a_new_success()
+    {
+        Job job = CreateQueuedJob("successful", "{}", 1);
+        await AddJobAsync(DatabaseOptions, job);
+        await using (TaskForgeDbContext context = new(DatabaseOptions))
+        {
+            SuccessfulJobHandler handler = new(() => throw new InvalidOperationException("Transient failure."));
+            JobExecutor executor = CreateExecutor(new EfCoreJobStore(context), [handler]);
+            await executor.ProcessNextAsync("worker-01", _ => { }, CancellationToken.None, CancellationToken.None);
+        }
+
+        await using (TaskForgeDbContext context = new(DatabaseOptions))
+        {
+            JobExecutor executor = CreateExecutor(new EfCoreJobStore(context), [new SuccessfulJobHandler()], timeProvider: new FixedTimeProvider(Now.AddSeconds(5)));
+            await executor.ProcessNextAsync("worker-02", _ => { }, CancellationToken.None, CancellationToken.None);
+        }
+
+        IReadOnlyList<JobAttempt> attempts = await ReadAttemptsAsync(job.Id);
+        Assert.Equal([1, 2], attempts.Select(attempt => attempt.AttemptNumber));
+        Assert.Equal(JobAttemptOutcome.Failed, attempts[0].Outcome);
+        Assert.Equal("Transient failure.", attempts[0].ErrorMessage);
+        Assert.Equal(JobAttemptOutcome.Succeeded, attempts[1].Outcome);
+        Assert.Equal("worker-02", attempts[1].WorkerId);
+        Assert.Null(attempts[1].ErrorCode);
+        Assert.Null(attempts[1].ErrorMessage);
+    }
+
+    private async Task<IReadOnlyList<JobAttempt>> ReadAttemptsAsync(Guid jobId)
+    {
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        return (await new EfCoreJobStore(context).GetAttemptsAsync(jobId))!;
     }
 
     private sealed class CompletionSaveInterceptor : SaveChangesInterceptor
@@ -408,14 +537,17 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
             throw new TaskCanceledException("Expected timeout.");
     }
 
-    private sealed class SuccessfulJobHandler : IJobHandler
+    private sealed class SuccessfulJobHandler(Action? onExecute = null) : IJobHandler
     {
         public string JobType => "successful";
 
         public string? ValidatePayload(string payloadJson) => null;
 
-        public Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default) =>
-            Task.FromResult<string?>(null);
+        public Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default)
+        {
+            onExecute?.Invoke();
+            return Task.FromResult<string?>(null);
+        }
     }
 
     private sealed class BlockingJobHandler : IJobHandler

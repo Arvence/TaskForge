@@ -1,3 +1,4 @@
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 using TaskForge.Application.Abstractions.Execution;
@@ -8,7 +9,7 @@ using TaskForge.Domain.Jobs;
 namespace TaskForge.Infrastructure.Persistence;
 
 public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
-    : IJobRepository, IJobQueue
+    : IJobRepository, IJobQueue, IJobAttemptReader
 {
     public async Task AddAsync(Job job, CancellationToken cancellationToken = default)
     {
@@ -99,8 +100,16 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
                 job => job.IdempotencyKey == idempotencyKey,
                 cancellationToken);
 
-    public async Task<bool> TryUpdateAsync(Job job, long expectedVersion, CancellationToken cancellationToken = default)
+    public Task<bool> TryUpdateAsync(Job job, long expectedVersion, CancellationToken cancellationToken = default) =>
+        TryUpdateAsync(job, expectedVersion, cancellationToken, null);
+
+    public async Task<bool> TryUpdateAsync(Job job, long expectedVersion, CancellationToken cancellationToken, JobAttempt? attempt)
     {
+        if (attempt is not null)
+        {
+            dbContext.JobAttempts.Update(attempt);
+        }
+
         dbContext.Jobs.Update(job);
         dbContext.Entry(job)
             .Property(candidate => candidate.Version)
@@ -176,6 +185,14 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
         foreach (Job job in expiredJobs)
         {
             long expectedVersion = job.Version;
+            List<JobAttempt> attempts = await dbContext.JobAttempts
+                .Where(attempt => attempt.JobId == job.Id && attempt.Outcome == JobAttemptOutcome.Running)
+                .ToListAsync(cancellationToken);
+            foreach (JobAttempt attempt in attempts)
+            {
+                attempt.Finish(JobAttemptOutcome.Abandoned, now, "LeaseExpired", "The worker lease expired before the attempt finished.");
+            }
+
             job.RecoverExpiredLease(now);
 
             if (await TryUpdateAsync(job, expectedVersion, cancellationToken))
@@ -194,7 +211,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
             .Select(job => job.CancellationRequested)
             .SingleOrDefaultAsync(cancellationToken);
 
-    public async Task<bool> TryCancelProcessingAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken = default)
+    public async Task<bool> TryCancelProcessingAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken = default, Guid? attemptId = null)
     {
         dbContext.ChangeTracker.Clear();
         Job? job = await FindAsync(jobId, cancellationToken);
@@ -204,7 +221,75 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
         }
 
         long expectedVersion = job.Version;
+        JobAttempt? attempt = null;
+        if (attemptId is not null)
+        {
+            attempt = await dbContext.JobAttempts.SingleOrDefaultAsync(candidate => candidate.Id == attemptId && candidate.JobId == jobId && candidate.Outcome == JobAttemptOutcome.Running, cancellationToken);
+            if (attempt is null || attempt.WorkerId != job.OwningWorkerId)
+            {
+                return false;
+            }
+
+            attempt.Finish(JobAttemptOutcome.Cancelled, now, "CancellationRequested", "Job cancellation was requested.");
+        }
+
         job.Cancel(now);
-        return await TryUpdateAsync(job, expectedVersion, cancellationToken);
+        return await TryUpdateAsync(job, expectedVersion, cancellationToken, attempt);
+    }
+
+    public async Task<JobAttempt?> TryStartAttemptAsync(Job job, DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        int lastNumber = await dbContext.JobAttempts
+            .Where(attempt => attempt.JobId == job.Id)
+            .Select(attempt => (int?)attempt.AttemptNumber)
+            .MaxAsync(cancellationToken) ?? 0;
+        JobAttempt attempt = new(Guid.NewGuid(), job.Id, lastNumber + 1, job.OwningWorkerId!, now);
+        long expectedVersion = job.Version;
+        job.RecordAttemptStart(now);
+        dbContext.JobAttempts.Add(attempt);
+        dbContext.Jobs.Update(job);
+        dbContext.Entry(job).Property(candidate => candidate.Version).OriginalValue = expectedVersion;
+
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return attempt;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            dbContext.ChangeTracker.Clear();
+            return null;
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is SqlException { Number: 2601 or 2627 })
+        {
+            dbContext.ChangeTracker.Clear();
+            return null;
+        }
+    }
+
+    public async Task FinishAttemptAsync(JobAttempt attempt, CancellationToken cancellationToken = default)
+    {
+        dbContext.Entry(attempt).State = EntityState.Detached;
+        await dbContext.JobAttempts
+            .Where(candidate => candidate.Id == attempt.Id && candidate.Outcome == JobAttemptOutcome.Running)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(candidate => candidate.Outcome, attempt.Outcome)
+                .SetProperty(candidate => candidate.FinishedAtUtc, attempt.FinishedAtUtc)
+                .SetProperty(candidate => candidate.DurationMilliseconds, attempt.DurationMilliseconds)
+                .SetProperty(candidate => candidate.ErrorCode, attempt.ErrorCode)
+                .SetProperty(candidate => candidate.ErrorMessage, attempt.ErrorMessage), cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<JobAttempt>?> GetAttemptsAsync(Guid jobId, CancellationToken cancellationToken = default)
+    {
+        if (!await dbContext.Jobs.AnyAsync(job => job.Id == jobId, cancellationToken))
+        {
+            return null;
+        }
+
+        return await dbContext.JobAttempts.AsNoTracking()
+            .Where(attempt => attempt.JobId == jobId)
+            .OrderBy(attempt => attempt.AttemptNumber)
+            .ToListAsync(cancellationToken);
     }
 }

@@ -24,4 +24,23 @@ public sealed class JobAttempt
     public long? DurationMilliseconds { get; private set; }
     public string? ErrorCode { get; private set; }
     public string? ErrorMessage { get; private set; }
+
+    public void Finish(JobAttemptOutcome outcome, DateTimeOffset finishedAtUtc, string? errorCode = null, string? errorMessage = null)
+    {
+        if (Outcome != JobAttemptOutcome.Running)
+        {
+            throw new InvalidOperationException("Only a running attempt can be finished.");
+        }
+
+        if (!Enum.IsDefined(outcome) || outcome == JobAttemptOutcome.Running)
+        {
+            throw new ArgumentOutOfRangeException(nameof(outcome));
+        }
+
+        Outcome = outcome;
+        FinishedAtUtc = finishedAtUtc < StartedAtUtc ? StartedAtUtc : finishedAtUtc;
+        DurationMilliseconds = (long)(FinishedAtUtc.Value - StartedAtUtc).TotalMilliseconds;
+        ErrorCode = errorCode is { Length: > 100 } ? errorCode[..100] : errorCode;
+        ErrorMessage = errorMessage is { Length: > 4000 } ? errorMessage[..4000] : errorMessage;
+    }
 }

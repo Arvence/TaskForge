@@ -91,6 +91,12 @@ public sealed class Job
 
     public void Complete(DateTimeOffset now) => Complete(null, now);
 
+    public void RecordAttemptStart(DateTimeOffset now)
+    {
+        EnsureProcessing();
+        Touch(now);
+    }
+
     public void Complete(string? resultJson, DateTimeOffset now)
     {
         if (Status != JobStatus.Processing)
