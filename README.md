@@ -78,6 +78,7 @@ cancellation request; the terminal state is persisted afterward.
 | `GET` | `/api/jobs/{id}` | Retrieve a job's state and result. |
 | `GET` | `/api/jobs/{id}/attempts` | Retrieve attempts in ascending attempt-number order. |
 | `POST` | `/api/jobs/{id}/cancel` | Request cancellation of an unfinished job. |
+| `POST` | `/api/jobs/{id}/retry` | Replay a dead-lettered or cancelled job as a new job. |
 | `GET` | `/api/workers` | Inspect workers and the desired worker count. |
 | `PUT` | `/api/workers/count` | Set the worker count using `{"count": 4}`; accepts `0`–`8`. |
 | `GET` | `/api/stats` | Get current job counts and success rate. |
@@ -158,6 +159,28 @@ Example `200 OK` response for a job cancelled while queued:
 
 An unknown job returns `404`; an already finished job or a conflicting update
 returns `409`.
+
+### Replay a job
+
+`POST /api/jobs/{id}/retry` requires no request body. Only `DeadLettered` and
+`Cancelled` jobs can be replayed. Success returns `201 Created`, the new job,
+and a `Location` header pointing to `/api/jobs/{newId}`.
+
+Replay uses normal submission validation and persistence, preserving the type,
+payload, priority, maximum retries, and timeout. The new job is queued immediately
+with a new ID and timestamps, zero retries, no cancellation request, and no
+execution attempts. The original job and its attempt history remain unchanged.
+Workers execute the new job through the normal pipeline; automatic retries are
+unchanged and apply independently to the new job.
+
+The original idempotency key is not copied: the new job's `idempotencyKey` is
+`null`. This endpoint ignores the `Idempotency-Key` header. Every successful call,
+including repeated or concurrent calls for the same source, creates a separate job.
+
+An unknown job returns `404`. All other states, including `Completed`, return
+`409` with a message and the source status. If the saved definition no longer
+passes current submission validation, the endpoint returns a `400` validation
+problem without creating a job.
 
 ### Inspect execution attempts
 
