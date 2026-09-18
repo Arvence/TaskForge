@@ -54,6 +54,24 @@ public sealed class JobManager(
         return new JobSubmissionResult(persistedJob, created);
     }
 
+    public async Task<JobReplayResult> ReplayAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        Job? source = await jobRepository.FindAsync(id, cancellationToken);
+        if (source is null)
+        {
+            return new JobReplayResult(JobReplayStatus.NotFound, null);
+        }
+
+        if (source.Status is not (JobStatus.DeadLettered or JobStatus.Cancelled))
+        {
+            return new JobReplayResult(JobReplayStatus.InvalidState, source);
+        }
+
+        SubmitJobCommand command = new(source.Type, source.PayloadJson, source.Priority, source.MaxRetries, source.TimeoutSeconds);
+        JobSubmissionResult replay = await SubmitAsync(command, idempotencyKey: null, cancellationToken);
+        return new JobReplayResult(JobReplayStatus.Created, replay.Job);
+    }
+
     public Task<JobPage> GetPageAsync(
         ListJobsQuery query,
         CancellationToken cancellationToken = default)

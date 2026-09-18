@@ -239,6 +239,42 @@ app.MapGet("/api/jobs/{id:guid}/attempts", async Task<IResult> (Guid id, IJobAtt
     .Produces<JobAttemptResponse[]>()
     .Produces(StatusCodes.Status404NotFound);
 
+app.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManager jobManager, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        JobReplayResult result = await jobManager.ReplayAsync(id, cancellationToken);
+        return result.Status switch
+        {
+            JobReplayStatus.Created =>
+                Results.Created($"/api/jobs/{result.Job!.Id}", JobResponse.From(result.Job)),
+            JobReplayStatus.NotFound =>
+                Results.NotFound(new { Message = $"Job '{id}' was not found." }),
+            _ => Results.Conflict(new
+            {
+                Message = $"Job '{id}' cannot be replayed. Only DeadLettered or Cancelled jobs can be replayed.",
+                Status = result.Job!.Status
+            })
+        };
+    }
+    catch (ApplicationValidationException exception)
+    {
+        return Results.ValidationProblem(
+            exception.Errors.ToDictionary(error => error.Key, error => error.Value));
+    }
+})
+    .WithName("ReplayJob")
+    .WithTags("Jobs")
+    .WithSummary("Replay a dead-lettered or cancelled job as a new execution.")
+    .WithDescription(
+        "Preserves type, payload, priority, maximum retries, and timeout, using current submission validation. "
+        + "The original job and its attempts remain unchanged. The new job has no idempotency key; "
+        + "the Idempotency-Key header is ignored and each successful call creates a separate job.")
+    .Produces<JobResponse>(StatusCodes.Status201Created)
+    .ProducesValidationProblem()
+    .Produces(StatusCodes.Status404NotFound)
+    .Produces(StatusCodes.Status409Conflict);
+
 app.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (
     Guid id,
     JobCancellationService cancellationService,
