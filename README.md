@@ -2,8 +2,8 @@
 
 TaskForge is a .NET 8 background job-processing system backed by Microsoft SQL
 Server (MSSQL). It lets applications submit work over HTTP, process it
-asynchronously, and inspect progress and execution history. The current job
-handler sends HTTP requests to allowlisted hosts.
+asynchronously, and inspect progress and execution history. Built-in handlers
+send HTTP requests to allowlisted hosts and generate structured expense reports.
 
 ## Key Features
 
@@ -34,7 +34,7 @@ flowchart LR
 - **Application:** submission validation, job workflows, and worker orchestration;
   depends on persistence interfaces rather than EF Core.
 - **Domain:** job states, attempt outcomes, and lifecycle rules.
-- **Infrastructure:** EF Core persistence, SQL Server migrations, and the HTTP handler.
+- **Infrastructure:** EF Core persistence, SQL Server migrations, and job handlers.
 
 A submission is validated, queued, and saved before the API returns its ID.
 Workers in the same process acquire eligible jobs from MSSQL, execute the
@@ -130,6 +130,51 @@ Response: `201 Created`, with a `Location` header pointing to the job.
 The job calls port `8080` inside the API container; the client submits through
 host port `8275`. Replaying the same submission and idempotency key returns
 `200` with the original job; changing the submission under that key returns `409`.
+
+### Generate an expense report
+
+`POST /api/jobs` with `Content-Type: application/json`:
+
+```json
+{
+  "type": "generate-report",
+  "payload": {
+    "title": "September expenses",
+    "entries": [
+      { "category": "Travel", "amount": 125.50 },
+      { "category": "Supplies", "amount": 40.25 },
+      { "category": "Travel", "amount": 24.50 }
+    ]
+  },
+  "maxRetries": 3,
+  "timeoutSeconds": 30
+}
+```
+
+After completion, `GET /api/jobs/{id}` includes this `result`:
+
+```json
+{
+  "title": "September expenses",
+  "entryCount": 3,
+  "totalAmount": 190.25,
+  "categories": [
+    { "category": "Supplies", "entryCount": 1, "totalAmount": 40.25 },
+    { "category": "Travel", "entryCount": 2, "totalAmount": 150.00 }
+  ]
+}
+```
+
+Provide a nonblank title (at most 120 characters), 1–1000 entries, and a
+nonblank category (at most 80 characters) for each entry. Amounts must be JSON
+numbers between 0 and 1,000,000,000,000 with at most two decimal places; use one
+currency for the entire report. Titles and categories are trimmed. Categories
+are grouped case-sensitively and sorted using ordinal order. Decimal totals are
+deterministic, with no timestamps, external calls, or generated files.
+
+The report uses the normal worker, result storage, timeout, and cancellation
+flow. Invalid payloads return `400` at submission; invalid persisted payloads
+fail permanently without retries.
 
 ### Retrieve a job
 
@@ -281,8 +326,8 @@ The workflow does not publish or deploy the image.
 - External requests can repeat after retries or lease recovery. Submission
   idempotency does not guarantee exactly-once side effects; receivers must
   tolerate duplicate calls.
-- Only registered handlers execute; `http-request` is the currently supported
-  job type. Job payloads and headers are readable through the API and should
+- Only registered handlers execute; supported job types are `http-request` and
+  `generate-report`. Job payloads and headers are readable through the API and should
   not contain secrets.
 - Attempt history covers new executions only. For expired leases, the recorded
   finish time is when abandonment was detected, not the exact interruption time.
