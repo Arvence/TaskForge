@@ -6,17 +6,118 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 using TaskForge.Infrastructure.Persistence;
 using TaskForge.Domain.Jobs;
+using TaskForge.Application.Workers;
 
 namespace TaskForge.IntegrationTests.Api;
 
 [Collection("SQL Server")]
 public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(fixture)
 {
+    [Fact]
+    public async Task Generate_report_runs_through_registered_handler_and_persists_result_and_attempt()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        using HttpResponseMessage submitted = await client.PostAsJsonAsync("/api/jobs", new
+        {
+            type = "generate-report",
+            payload = new
+            {
+                title = "Expenses",
+                entries = new[]
+                {
+                    new { category = "Travel", amount = 10.25m },
+                    new { category = "Supplies", amount = 2m },
+                    new { category = "Travel", amount = 0.75m }
+                }
+            },
+            maxRetries = 3,
+            timeoutSeconds = 30
+        });
+        Assert.Equal(HttpStatusCode.Created, submitted.StatusCode);
+        JsonElement queued = await submitted.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Queued", queued.GetProperty("status").GetString());
+        Guid id = queued.GetProperty("id").GetGuid();
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            JobExecutor executor = scope.ServiceProvider.GetRequiredService<JobExecutor>();
+            Assert.True(await executor.ProcessNextAsync("report-worker", _ => { }, CancellationToken.None, CancellationToken.None));
+        }
+
+        using HttpResponseMessage fetched = await client.GetAsync($"/api/jobs/{id}");
+        Assert.Equal(HttpStatusCode.OK, fetched.StatusCode);
+        JsonElement completed = await fetched.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Completed", completed.GetProperty("status").GetString());
+        Assert.Equal(0, completed.GetProperty("retryCount").GetInt32());
+        JsonElement result = completed.GetProperty("result");
+        Assert.Equal("Expenses", result.GetProperty("title").GetString());
+        Assert.Equal(3, result.GetProperty("entryCount").GetInt32());
+        Assert.Equal(13m, result.GetProperty("totalAmount").GetDecimal());
+        Assert.Equal(2, result.GetProperty("categories").GetArrayLength());
+
+        using HttpResponseMessage history = await client.GetAsync($"/api/jobs/{id}/attempts");
+        Assert.Equal(HttpStatusCode.OK, history.StatusCode);
+        JsonElement attempt = Assert.Single((await history.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray());
+        Assert.Equal("Succeeded", attempt.GetProperty("outcome").GetString());
+        Assert.Equal(1, attempt.GetProperty("attemptNumber").GetInt32());
+    }
+
+    [Fact]
+    public async Task Invalid_report_is_rejected_at_submission_without_persisting_job()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync("/api/jobs", new
+        {
+            type = "generate-report",
+            payload = new { title = "Expenses", entries = new[] { new { category = "Travel", amount = -1m } } }
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        JsonElement problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("amount", problem.GetProperty("errors").GetProperty("Payload")[0].GetString());
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        Assert.Empty(await context.Jobs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Invalid_persisted_report_is_dead_lettered_without_retry()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        Job job = new(Guid.NewGuid(), "generate-report", "{}", JobPriority.Normal, 3, 30, now);
+        job.Queue(now);
+        await using (TaskForgeDbContext context = new(DatabaseOptions))
+        {
+            context.Jobs.Add(job);
+            await context.SaveChangesAsync();
+        }
+
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            JobExecutor executor = scope.ServiceProvider.GetRequiredService<JobExecutor>();
+            Assert.True(await executor.ProcessNextAsync("report-worker", _ => { }, CancellationToken.None, CancellationToken.None));
+            Assert.False(await executor.ProcessNextAsync("report-worker", _ => { }, CancellationToken.None, CancellationToken.None));
+        }
+
+        await using TaskForgeDbContext readContext = new(DatabaseOptions);
+        Job persisted = await readContext.Jobs.SingleAsync(candidate => candidate.Id == job.Id);
+        Assert.Equal(JobStatus.DeadLettered, persisted.Status);
+        Assert.Equal(0, persisted.RetryCount);
+        Assert.Null(persisted.ResultJson);
+        JobAttempt attempt = await readContext.JobAttempts.SingleAsync(candidate => candidate.JobId == job.Id);
+        Assert.Equal(JobAttemptOutcome.PermanentlyFailed, attempt.Outcome);
+        Assert.Equal("NonRetryableJobException", attempt.ErrorCode);
+    }
+
     [Fact]
     public async Task Submit_job_returns_created_location_and_serialized_job()
     {
