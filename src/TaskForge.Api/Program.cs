@@ -78,6 +78,7 @@ builder.Services.AddHttpClient<HttpRequestJobHandler>()
 builder.Services.AddScoped<IJobHandler>(
     serviceProvider =>
         serviceProvider.GetRequiredService<HttpRequestJobHandler>());
+builder.Services.AddScoped<IJobHandler, GenerateReportJobHandler>();
 builder.Services.AddScoped<JobExecutor>();
 builder.Services.AddSingleton<WorkerManager>();
 builder.Services.AddHostedService(
