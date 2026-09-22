@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 
 using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Abstractions.Persistence;
+using TaskForge.Application.Jobs;
 using TaskForge.Application.Workers;
 using TaskForge.Infrastructure.Persistence;
 
@@ -37,6 +38,7 @@ public sealed class WorkerManagerTests(SqlServerFixture fixture) : SqlServerTest
             provider => provider.GetRequiredService<EfCoreJobStore>());
         services.AddScoped<IWorkerSettingsStore, EfCoreWorkerSettingsStore>();
         services.AddSingleton<JobCancellationRegistry>();
+        services.AddSingleton<JobRetryPolicy>();
         services.AddScoped<JobExecutor>();
         services.AddSingleton<WorkerManager>();
 

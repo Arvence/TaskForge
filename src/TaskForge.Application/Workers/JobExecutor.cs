@@ -2,11 +2,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using TaskForge.Application.Abstractions.Execution;
+using TaskForge.Application.Jobs;
 using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Application.Workers;
 
-public sealed class JobExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> handlers, JobCancellationRegistry cancellationRegistry, TimeProvider timeProvider, IOptions<WorkerOptions> options, ILogger<JobExecutor> logger)
+public sealed class JobExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> handlers, JobCancellationRegistry cancellationRegistry, TimeProvider timeProvider, IOptions<WorkerOptions> options, JobRetryPolicy retryPolicy, ILogger<JobExecutor> logger)
 {
     private readonly IReadOnlyDictionary<string, IJobHandler> _handlers =
         handlers.ToDictionary(handler => handler.JobType, StringComparer.OrdinalIgnoreCase);
@@ -124,7 +125,7 @@ public sealed class JobExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> han
             }
             else
             {
-                job.Fail(FormatError(attempt), finishedAt.Add(GetRetryDelay(job)), finishedAt);
+                job.Fail(FormatError(attempt), finishedAt.Add(retryPolicy.GetDelay(job.RetryCount)), finishedAt);
             }
 
             bool persisted = await PersistTransitionAsync(job, expectedVersion, attempt, CancellationToken.None);
@@ -146,14 +147,6 @@ public sealed class JobExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> han
         {
             currentJobChanged(null);
         }
-    }
-
-    private TimeSpan GetRetryDelay(Job job)
-    {
-        int exponent = Math.Min(job.RetryCount, 30);
-        long exponentialDelaySeconds = (long)_options.RetryDelaySeconds << exponent;
-        long delaySeconds = Math.Min(exponentialDelaySeconds, _options.MaxRetryDelaySeconds);
-        return TimeSpan.FromSeconds(delaySeconds);
     }
 
     private async Task<bool> PersistTransitionAsync(Job job, long expectedVersion, JobAttempt? attempt, CancellationToken cancellationToken)

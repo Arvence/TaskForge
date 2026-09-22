@@ -84,14 +84,16 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Empty(await ReadAttemptsAsync(job.Id));
     }
 
-    [Fact]
-    public async Task Failed_job_uses_retry_policy()
+    [Theory]
+    [InlineData(0, JobStatus.DeadLettered)]
+    [InlineData(1, JobStatus.Retrying)]
+    public async Task Failed_job_uses_retry_policy(int maxRetries, JobStatus expectedStatus)
     {
         DbContextOptions<TaskForgeDbContext> databaseOptions = DatabaseOptions;
         Job job = CreateQueuedJob(
             "failing",
             """{"value":1}""",
-            maxRetries: 1);
+            maxRetries: maxRetries);
         await AddJobAsync(databaseOptions, job);
         await using TaskForgeDbContext workerContext = new(databaseOptions);
         EfCoreJobStore store = new(workerContext);
@@ -107,9 +109,9 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
 
         Job? persistedJob = await store.FindAsync(job.Id);
         Assert.NotNull(persistedJob);
-        Assert.Equal(JobStatus.Retrying, persistedJob.Status);
+        Assert.Equal(expectedStatus, persistedJob.Status);
         Assert.Equal(1, persistedJob.RetryCount);
-        Assert.Equal(Now.AddSeconds(5), persistedJob.NextRetryAtUtc);
+        Assert.Equal(maxRetries == 0 ? (DateTimeOffset?)null : Now.AddSeconds(5), persistedJob.NextRetryAtUtc);
         Assert.Contains("Expected failure", persistedJob.LastError);
         JobAttempt attempt = Assert.Single(await ReadAttemptsAsync(job.Id));
         Assert.Equal(JobAttemptOutcome.Failed, attempt.Outcome);
@@ -463,21 +465,26 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         return await store.FindAsync(jobId);
     }
 
-    private static JobExecutor CreateExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> handlers, JobCancellationRegistry? cancellationRegistry = null, TimeProvider? timeProvider = null, WorkerOptions? options = null) =>
-        new(
+    private static JobExecutor CreateExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> handlers, JobCancellationRegistry? cancellationRegistry = null, TimeProvider? timeProvider = null, WorkerOptions? options = null)
+    {
+        IOptions<WorkerOptions> workerOptions = Options.Create(options ?? new WorkerOptions
+        {
+            Count = 1,
+            PollIntervalMilliseconds = 50,
+            RetryDelaySeconds = 5,
+            MaxRetryDelaySeconds = 300,
+            LeaseGraceSeconds = 30
+        });
+
+        return new(
             jobQueue,
             handlers,
             cancellationRegistry ?? new JobCancellationRegistry(),
             timeProvider ?? new FixedTimeProvider(Now),
-            Options.Create(options ?? new WorkerOptions
-            {
-                Count = 1,
-                PollIntervalMilliseconds = 50,
-                RetryDelaySeconds = 5,
-                MaxRetryDelaySeconds = 300,
-                LeaseGraceSeconds = 30
-            }),
+            workerOptions,
+            new JobRetryPolicy(workerOptions),
             NullLogger<JobExecutor>.Instance);
+    }
 
     private static Job CreateQueuedJob(string type, string payload, int maxRetries)
     {
