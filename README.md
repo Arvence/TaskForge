@@ -14,6 +14,136 @@ send HTTP requests to allowlisted hosts and generate structured expense reports.
 - Filtered and paginated job lists, execution attempt history, and job statistics.
 - Docker Compose setup, automated tests, and GitHub Actions CI.
 
+## Quick Start
+
+### Requirements
+
+- Git to clone the repository.
+- Docker Desktop with Docker Compose v2, running in Linux container mode.
+- PowerShell 5.1 or later.
+- Optional: an HTTP client such as Postman, Bruno, or curl for manual API testing.
+
+TaskForge and SQL Server run in containers. You do not need to install .NET or
+SQL Server locally.
+
+### Built With
+
+- .NET 8 / ASP.NET Core
+- Entity Framework Core 8
+- SQL Server 2022
+- Docker / Docker Compose
+- PowerShell
+
+### Quick Start Flow
+
+```mermaid
+flowchart LR
+    Clone["Clone repository"] --> Setup["Run ./setup.ps1"]
+    Setup --> Docker["Docker starts<br/>TaskForge + SQL Server"]
+    Docker --> Ready["GET /api/ready"]
+    Ready --> Submit["POST /api/jobs"]
+    Submit --> Store["Job stored<br/>in SQL Server"]
+    Store --> Worker["Worker executes job"]
+    Worker --> Track["GET /api/jobs/{id}"]
+    Track --> Status["Completed / Retrying / DeadLettered"]
+```
+
+### 1. Clone the repository
+
+```powershell
+git clone https://github.com/Arvence/TaskForge.git
+cd TaskForge
+```
+
+### 2. Run the setup
+
+```powershell
+./setup.ps1
+```
+
+Setup checks Docker, creates `.env` from `.env.example` when needed, and securely
+prompts for a SQL Server password if one is not configured. It preserves existing
+configuration; use the original SA password if a database volume already exists.
+
+Accept `Start TaskForge now? [Y/n]` to build and start the containers. Setup waits
+for SQL Server health and API readiness, then prints the local URLs. The API uses
+port `8275`; a new database starts with one worker.
+
+If Windows blocks the script, run
+`powershell -NoProfile -ExecutionPolicy Bypass -File ./setup.ps1`.
+
+### 3. Verify TaskForge
+
+GET [http://localhost:8275/api/ready](http://localhost:8275/api/ready)
+
+```powershell
+Invoke-RestMethod http://localhost:8275/api/ready
+```
+
+Expect `200 OK` with `{"status":"Ready"}` before submitting jobs.
+
+### 4. Submit a job
+
+`POST http://localhost:8275/api/jobs` with `Content-Type: application/json`:
+
+```powershell
+$body = @'
+{
+  "type": "http-request",
+  "priority": "Normal",
+  "payload": {
+    "url": "http://localhost:8080/api/health",
+    "method": "GET"
+  },
+  "maxRetries": 3,
+  "timeoutSeconds": 30
+}
+'@
+
+$job = Invoke-RestMethod http://localhost:8275/api/jobs -Method Post -ContentType 'application/json' -Body $body
+$job.id
+```
+
+TaskForge persists the job in SQL Server and returns `201 Created` with its ID.
+A background worker executes it independently. The example calls TaskForge's own
+health endpoint on port `8080` inside the API container; your client uses `8275`.
+
+### 5. Track the job
+
+`GET http://localhost:8275/api/jobs/{id}`; replace `{id}` with the returned job ID.
+In the same PowerShell session:
+
+```powershell
+Invoke-RestMethod "http://localhost:8275/api/jobs/$($job.id)" | ConvertTo-Json -Depth 5
+```
+
+- Success: `Queued → Processing → Completed`.
+- Retry: `Queued → Processing → Retrying → Queued → Processing → Completed`.
+- Permanent failures or exhausted retries end in `DeadLettered`.
+
+Repeat the request until the job finishes. For this example, expect `Completed`
+with `result.statusCode` equal to `200`.
+
+### 6. Inspect execution history
+
+`GET http://localhost:8275/api/jobs/{id}/attempts`
+
+```powershell
+Invoke-RestMethod "http://localhost:8275/api/jobs/$($job.id)/attempts" | ConvertTo-Json -Depth 5
+```
+
+This returns execution attempts in order, including retry history, outcomes,
+timings, and errors. The successful example has one `Succeeded` attempt.
+
+### 7. Stop TaskForge
+
+```powershell
+docker compose down
+```
+
+The SQL Server named volume preserves jobs, execution history, and worker settings.
+Do not add `--volumes` unless you intend to delete that data.
+
 ## Architecture / Request Flow
 
 ```mermaid
@@ -274,33 +404,6 @@ A job with no executions returns `[]`; a missing job returns `404`.
 Statistics describe current job states, not execution attempts. Success rate is
 `completed / (completed + deadLettered) * 100`, rounded to two decimal places;
 it is `null` when neither outcome exists.
-
-## Quick Start
-
-Requires Docker with Compose v2; on Windows, use Linux container mode.
-From the repository root, create `.env` on first setup (PowerShell):
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Replace the `MSSQL_SA_PASSWORD` placeholder with a strong, unique password.
-Keep an existing `.env` if already configured; it is excluded from Git.
-
-```powershell
-docker compose config --quiet
-docker compose up --build -d
-```
-
-Compose starts MSSQL and the API, applies migrations, and preserves database
-data in a named volume. Access the [health endpoint](http://localhost:8275/api/health)
-or [OpenAPI JSON](http://localhost:8275/openapi/v1.json).
-`docker compose down` stops the stack while retaining data.
-
-Outbound HTTP hosts must be explicitly allowed in
-[appsettings.json](src/TaskForge.Api/appsettings.json) or environment overrides
-in [compose.yaml](compose.yaml). Defaults are `localhost` and `127.0.0.1`;
-redirects are disabled.
 
 ## Testing & CI
 
