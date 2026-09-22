@@ -30,6 +30,10 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
             builder.ToTable("Jobs");
             builder.HasKey(job => job.Id);
 
+            builder.Property(job => job.ApplicationId)
+                .HasMaxLength(JobApplicationId.MaximumLength)
+                .UseCollation("Latin1_General_100_BIN2")
+                .IsRequired();
             builder.Property(job => job.Type)
                 .HasMaxLength(100)
                 .UseCollation("Latin1_General_100_CI_AS")
@@ -64,7 +68,9 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
             builder.HasIndex(job => new { job.Status, job.Priority, job.CreatedAtUtc });
             builder.HasIndex(job => job.NextRetryAtUtc);
             builder.HasIndex(job => job.LeaseExpiresAtUtc);
-            builder.HasIndex(job => job.IdempotencyKey).IsUnique();
+            builder.HasIndex(job => new { job.ApplicationId, job.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("[IdempotencyKey] IS NOT NULL");
         }
     }
 

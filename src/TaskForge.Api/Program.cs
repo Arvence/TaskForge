@@ -191,12 +191,13 @@ app.MapGet("/api/jobs", async Task<IResult> (
     [FromQuery] string? type = null,
     [FromQuery] JobPriority? priority = null,
     [FromQuery] int page = 1,
-    [FromQuery] int pageSize = ListJobsQuery.DefaultPageSize) =>
+    [FromQuery] int pageSize = ListJobsQuery.DefaultPageSize,
+    [FromQuery] string? applicationId = null) =>
 {
     try
     {
         JobPage result = await jobManager.GetPageAsync(
-            new ListJobsQuery(status, type, priority, page, pageSize),
+            new ListJobsQuery(status, type, priority, page, pageSize, applicationId),
             cancellationToken);
         return Results.Ok(JobPageResponse.From(result));
     }

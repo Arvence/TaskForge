@@ -59,12 +59,14 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
         Assert.NotEqual(Guid.Empty, replayId);
         Assert.Equal($"/api/jobs/{replayId}", response.Headers.Location?.OriginalString);
         Assert.Equal("Queued", body.GetProperty("status").GetString());
+        Assert.Equal(source.ApplicationId, body.GetProperty("applicationId").GetString());
         Assert.Equal(JsonValueKind.Null, body.GetProperty("idempotencyKey").ValueKind);
 
         await using (TaskForgeDbContext context = new(DatabaseOptions))
         {
             Job replay = await context.Jobs.AsNoTracking().SingleAsync(job => job.Id == replayId);
             Assert.Equal(source.Type, replay.Type);
+            Assert.Equal(source.ApplicationId, replay.ApplicationId);
             Assert.Equal(source.PayloadJson, replay.PayloadJson);
             Assert.Equal(source.Priority, replay.Priority);
             Assert.Equal(source.MaxRetries, replay.MaxRetries);
@@ -158,7 +160,7 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
     [Fact]
     public async Task Replay_uses_current_submission_validation()
     {
-        Job source = new(Guid.NewGuid(), "removed-handler", "{}", JobPriority.Normal, 1, 15, CreatedAt);
+        Job source = new(Guid.NewGuid(), "test-app", "removed-handler", "{}", JobPriority.Normal, 1, 15, CreatedAt);
         source.RequestCancellation(CreatedAt);
         await using TaskForgeDbContext context = new(DatabaseOptions);
         context.Jobs.Add(source);
@@ -184,7 +186,7 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
 
     private static Job CreateSource(JobStatus status)
     {
-        Job job = new(Guid.NewGuid(), "http-request", """{"url":"http://localhost/replay","method":"GET"}""", JobPriority.High, 1, 15, CreatedAt, "original-key");
+        Job job = new(Guid.NewGuid(), "test-app", "http-request", """{"url":"http://localhost/replay","method":"GET"}""", JobPriority.High, 1, 15, CreatedAt, "original-key");
         if (status == JobStatus.Pending)
         {
             return job;

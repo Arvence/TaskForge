@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TaskForge.Infrastructure.Persistence;
 
@@ -11,9 +12,10 @@ using TaskForge.Infrastructure.Persistence;
 namespace TaskForge.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(TaskForgeDbContext))]
-    partial class TaskForgeDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260922141844_AddJobApplicationOwnership")]
+    partial class AddJobApplicationOwnership
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

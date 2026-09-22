@@ -19,6 +19,9 @@ public sealed class SubmitJobValidator(IEnumerable<IJobHandler> handlers)
 
         Dictionary<string, string[]> errors = [];
 
+        AddError(errors, "ApplicationId", JobApplicationId.IsValid(command.ApplicationId)
+            ? null
+            : "Application ID must contain 1 to 100 ASCII letters, digits, dots, underscores, or hyphens.");
         AddError(errors, "Type", ValidateType(command.Type));
         AddError(errors, "Payload", ValidateJsonPayload(command.PayloadJson));
         ValidateHandlerPayload(errors, command.Type, command.PayloadJson);

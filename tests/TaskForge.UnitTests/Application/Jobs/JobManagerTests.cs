@@ -21,6 +21,7 @@ public sealed class JobManagerTests
             repository,
             new StubJobHandler("generate-report"));
         SubmitJobCommand command = new(
+            " A-Project ",
             " generate-report ",
             """{"reportName":"Monthly report"}""",
             JobPriority.High,
@@ -29,6 +30,7 @@ public sealed class JobManagerTests
 
         Job job = await manager.SubmitAsync(command);
 
+        Assert.Equal("a-project", job.ApplicationId);
         Assert.Equal("generate-report", job.Type);
         Assert.Equal(JobStatus.Queued, job.Status);
         Assert.Equal(Now, job.CreatedAtUtc);
@@ -42,6 +44,7 @@ public sealed class JobManagerTests
         FakeJobRepository repository = new();
         JobManager manager = CreateManager(repository);
         SubmitJobCommand command = new(
+            "test-app",
             string.Empty,
             "null",
             JobPriority.Normal,
@@ -64,6 +67,7 @@ public sealed class JobManagerTests
         FakeJobRepository repository = new();
         JobManager manager = CreateManager(repository);
         SubmitJobCommand command = new(
+            "test-app",
             "unknown",
             """{"value":1}""",
             JobPriority.Normal,
@@ -90,6 +94,7 @@ public sealed class JobManagerTests
                 "example",
                 "The example payload is invalid."));
         SubmitJobCommand command = new(
+            "test-app",
             "example",
             """{"value":1}""",
             JobPriority.Normal,
@@ -115,6 +120,7 @@ public sealed class JobManagerTests
         FakeJobRepository repository = new();
         JobManager manager = CreateManager(repository);
         SubmitJobCommand command = new(
+            "test-app",
             "generate-report",
             payloadJson,
             JobPriority.Normal,
@@ -137,6 +143,7 @@ public sealed class JobManagerTests
             repository,
             new StubJobHandler("generate-report"));
         Job job = await manager.SubmitAsync(new SubmitJobCommand(
+            "test-app",
             "generate-report",
             """{"reportName":"Monthly report"}""",
             JobPriority.Normal,
@@ -179,6 +186,7 @@ public sealed class JobManagerTests
             repository,
             new StubJobHandler("example"));
         SubmitJobCommand command = new(
+            "test-app",
             "example",
             """{"value":1}""",
             JobPriority.Normal,
@@ -206,6 +214,7 @@ public sealed class JobManagerTests
             repository,
             new StubJobHandler("example"));
         SubmitJobCommand firstCommand = new(
+            "test-app",
             "example",
             """{"value":1}""",
             JobPriority.Normal,
@@ -221,6 +230,91 @@ public sealed class JobManagerTests
             () => manager.SubmitAsync(
                 differentCommand,
                 "request-123"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("a/b")]
+    [InlineData("a b")]
+    [InlineData("\u00e4-project")]
+    public async Task Invalid_application_id_is_rejected_before_persistence(string? applicationId)
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = CreateManager(repository, new StubJobHandler("example"));
+        SubmitJobCommand command = new(applicationId!, "example", "{}", JobPriority.Normal, 3, 30);
+
+        ApplicationValidationException exception = await Assert.ThrowsAsync<ApplicationValidationException>(() => manager.SubmitAsync(command));
+
+        Assert.Equal(["ApplicationId"], exception.Errors.Keys);
+        Assert.Empty(repository.Jobs);
+    }
+
+    [Fact]
+    public async Task Oversized_application_id_is_rejected_for_submission_and_listing()
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = CreateManager(repository, new StubJobHandler("example"));
+        string applicationId = new('a', 101);
+        SubmitJobCommand command = new(applicationId, "example", "{}", JobPriority.Normal, 3, 30);
+
+        ApplicationValidationException submission = await Assert.ThrowsAsync<ApplicationValidationException>(() => manager.SubmitAsync(command));
+        ApplicationValidationException listing = await Assert.ThrowsAsync<ApplicationValidationException>(() => manager.GetPageAsync(new ListJobsQuery(ApplicationId: applicationId)));
+
+        Assert.Contains("ApplicationId", submission.Errors.Keys);
+        Assert.Contains("ApplicationId", listing.Errors.Keys);
+        Assert.Empty(repository.Jobs);
+    }
+
+    [Fact]
+    public async Task Idempotency_is_scoped_to_normalized_application_id()
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = CreateManager(repository, new StubJobHandler("example"));
+        SubmitJobCommand command = new(" A-Project ", "example", "{}", JobPriority.Normal, 3, 30);
+
+        JobSubmissionResult first = await manager.SubmitAsync(command, "same-key");
+        JobSubmissionResult duplicate = await manager.SubmitAsync(command with { ApplicationId = "a-project" }, "same-key");
+        JobSubmissionResult other = await manager.SubmitAsync(command with { ApplicationId = "b-project", PayloadJson = "{\"other\":true}" }, "same-key");
+
+        Assert.True(first.Created);
+        Assert.False(duplicate.Created);
+        Assert.Equal(first.Job.Id, duplicate.Job.Id);
+        Assert.True(other.Created);
+        Assert.NotEqual(first.Job.Id, other.Job.Id);
+        Assert.Equal(2, repository.Jobs.Count);
+    }
+
+    [Fact]
+    public async Task Application_filter_is_normalized_before_pagination()
+    {
+        FakeJobRepository repository = new();
+        JobManager manager = CreateManager(repository, new StubJobHandler("example"));
+        SubmitJobCommand command = new("a-project", "example", "{}", JobPriority.High, 3, 30);
+        await manager.SubmitAsync(command);
+        await manager.SubmitAsync(command with { ApplicationId = "b-project" });
+        Job second = await manager.SubmitAsync(command);
+
+        JobPage page = await manager.GetPageAsync(new ListJobsQuery(Priority: JobPriority.High, Page: 2, PageSize: 1, ApplicationId: " A-PROJECT "));
+        JobPage all = await manager.GetPageAsync(new ListJobsQuery());
+
+        Assert.Equal(2, page.TotalCount);
+        Assert.Equal(second.Id, Assert.Single(page.Items).Id);
+        Assert.Equal(3, all.TotalCount);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("a/b")]
+    public async Task Invalid_application_filter_is_rejected(string applicationId)
+    {
+        JobManager manager = CreateManager(new FakeJobRepository());
+
+        ApplicationValidationException exception = await Assert.ThrowsAsync<ApplicationValidationException>(() => manager.GetPageAsync(new ListJobsQuery(ApplicationId: applicationId)));
+
+        Assert.Contains("ApplicationId", exception.Errors.Keys);
     }
 
     private static JobManager CreateManager(
@@ -256,7 +350,7 @@ public sealed class JobManagerTests
                 ? null
                 : Jobs.SingleOrDefault(
                     candidate =>
-                        candidate.IdempotencyKey == job.IdempotencyKey);
+                        candidate.ApplicationId == job.ApplicationId && candidate.IdempotencyKey == job.IdempotencyKey);
             if (existing is not null)
             {
                 return Task.FromResult(existing);
@@ -271,6 +365,10 @@ public sealed class JobManagerTests
             CancellationToken cancellationToken = default)
         {
             IEnumerable<Job> jobs = Jobs;
+            if (query.ApplicationId is not null)
+            {
+                jobs = jobs.Where(job => job.ApplicationId == query.ApplicationId);
+            }
             if (query.Status is not null)
             {
                 jobs = jobs.Where(job => job.Status == query.Status);
@@ -306,12 +404,10 @@ public sealed class JobManagerTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Jobs.SingleOrDefault(job => job.Id == id));
 
-        public Task<Job?> FindByIdempotencyKeyAsync(
-            string idempotencyKey,
-            CancellationToken cancellationToken = default) =>
+        public Task<Job?> FindByIdempotencyKeyAsync(string applicationId, string idempotencyKey, CancellationToken cancellationToken = default) =>
             Task.FromResult(
                 Jobs.SingleOrDefault(
-                    job => job.IdempotencyKey == idempotencyKey));
+                    job => job.ApplicationId == applicationId && job.IdempotencyKey == idempotencyKey));
 
         public Task<bool> TryUpdateAsync(
             Job job,

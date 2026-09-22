@@ -26,6 +26,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
         }
 
         Job? existing = await FindByIdempotencyKeyAsync(
+            job.ApplicationId,
             job.IdempotencyKey,
             cancellationToken);
         if (existing is not null)
@@ -44,6 +45,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
         {
             dbContext.ChangeTracker.Clear();
             existing = await FindByIdempotencyKeyAsync(
+                job.ApplicationId,
                 job.IdempotencyKey,
                 cancellationToken);
             if (existing is not null)
@@ -58,6 +60,11 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
     public async Task<JobPage> GetPageAsync(ListJobsQuery query, CancellationToken cancellationToken = default)
     {
         IQueryable<Job> jobs = dbContext.Jobs.AsNoTracking();
+
+        if (query.ApplicationId is not null)
+        {
+            jobs = jobs.Where(job => job.ApplicationId == query.ApplicationId);
+        }
 
         if (query.Status is not null)
         {
@@ -93,11 +100,11 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
             .AsNoTracking()
             .SingleOrDefaultAsync(job => job.Id == id, cancellationToken);
 
-    public Task<Job?> FindByIdempotencyKeyAsync(string idempotencyKey, CancellationToken cancellationToken = default) =>
+    public Task<Job?> FindByIdempotencyKeyAsync(string applicationId, string idempotencyKey, CancellationToken cancellationToken = default) =>
         dbContext.Jobs
             .AsNoTracking()
             .SingleOrDefaultAsync(
-                job => job.IdempotencyKey == idempotencyKey,
+                job => job.ApplicationId == applicationId && job.IdempotencyKey == idempotencyKey,
                 cancellationToken);
 
     public Task<bool> TryUpdateAsync(Job job, long expectedVersion, CancellationToken cancellationToken = default) =>

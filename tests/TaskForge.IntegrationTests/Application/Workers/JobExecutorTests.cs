@@ -322,7 +322,7 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
     [Fact]
     public async Task Actual_job_timeout_records_timed_out_attempt()
     {
-        Job job = new(Guid.NewGuid(), "blocking", "{}", JobPriority.Normal, 1, 1, DateTimeOffset.UtcNow);
+        Job job = new(Guid.NewGuid(), "test-app", "blocking", "{}", JobPriority.Normal, 1, 1, DateTimeOffset.UtcNow);
         job.Queue(DateTimeOffset.UtcNow);
         await AddJobAsync(DatabaseOptions, job);
         await using TaskForgeDbContext context = new(DatabaseOptions);
@@ -490,6 +490,7 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
     {
         Job job = new(
             Guid.NewGuid(),
+            "test-app",
             type,
             payload,
             JobPriority.Normal,

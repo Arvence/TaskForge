@@ -30,7 +30,7 @@ public sealed class SqlServerJobStatisticsTests(SqlServerFixture fixture) : SqlS
                 for (int index = 0; index <= (int)status; index++)
                 {
                     DateTimeOffset createdAt = now.AddDays(-index * 365);
-                    Job job = new(Guid.NewGuid(), index % 2 == 0 ? "http-request" : "generate-report", "{}", index % 2 == 0 ? JobPriority.High : JobPriority.Low, 3, 30, createdAt);
+                    Job job = new(Guid.NewGuid(), "test-app", index % 2 == 0 ? "http-request" : "generate-report", "{}", index % 2 == 0 ? JobPriority.High : JobPriority.Low, 3, 30, createdAt);
                     if (status != JobStatus.Pending)
                     {
                         job.Queue(createdAt);
@@ -77,7 +77,7 @@ public sealed class SqlServerJobStatisticsTests(SqlServerFixture fixture) : SqlS
     {
         DateTimeOffset now = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        Job job = new(Guid.NewGuid(), "http-request", "{}", JobPriority.Normal, 3, 30, now);
+        Job job = new(Guid.NewGuid(), "test-app", "http-request", "{}", JobPriority.Normal, 3, 30, now);
         job.Queue(now);
         context.Jobs.Add(job);
         await context.SaveChangesAsync();

@@ -4,17 +4,10 @@ public sealed class Job
 {
     private Job() { }
 
-    public Job(
-        Guid id,
-        string type,
-        string payloadJson,
-        JobPriority priority,
-        int maxRetries,
-        int timeoutSeconds,
-        DateTimeOffset createdAtUtc,
-        string? idempotencyKey = null)
+    public Job(Guid id, string applicationId, string type, string payloadJson, JobPriority priority, int maxRetries, int timeoutSeconds, DateTimeOffset createdAtUtc, string? idempotencyKey = null)
     {
         Id = id;
+        ApplicationId = JobApplicationId.Normalize(applicationId);
         Type = type;
         PayloadJson = payloadJson;
         IdempotencyKey = idempotencyKey;
@@ -27,6 +20,7 @@ public sealed class Job
     }
 
     public Guid Id { get; private set; }
+    public string ApplicationId { get; private set; } = string.Empty;
     public string Type { get; private set; } = string.Empty;
     public string PayloadJson { get; private set; } = string.Empty;
     public string? IdempotencyKey { get; private set; }

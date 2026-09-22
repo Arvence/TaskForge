@@ -198,6 +198,7 @@ public sealed class JobTests
 
     private static Job CreateJob(int maxRetries = 3) => new(
         Guid.Parse("7c077bba-bab3-4e20-a47f-a0ec51838a18"),
+        "test-app",
         "generate-report",
         """{"reportName":"Monthly report"}""",
         JobPriority.High,

@@ -26,6 +26,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         using HttpClient client = factory.CreateClient();
         using HttpResponseMessage submitted = await client.PostAsJsonAsync("/api/jobs", new
         {
+            applicationId = "test-app",
             type = "generate-report",
             payload = new
             {
@@ -77,6 +78,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
 
         using HttpResponseMessage response = await client.PostAsJsonAsync("/api/jobs", new
         {
+            applicationId = "test-app",
             type = "generate-report",
             payload = new { title = "Expenses", entries = new[] { new { category = "Travel", amount = -1m } } }
         });
@@ -92,7 +94,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
     public async Task Invalid_persisted_report_is_dead_lettered_without_retry()
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        Job job = new(Guid.NewGuid(), "generate-report", "{}", JobPriority.Normal, 3, 30, now);
+        Job job = new(Guid.NewGuid(), "test-app", "generate-report", "{}", JobPriority.Normal, 3, 30, now);
         job.Queue(now);
         await using (TaskForgeDbContext context = new(DatabaseOptions))
         {
@@ -133,6 +135,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.NotEqual(Guid.Empty, id);
         Assert.Equal($"/api/jobs/{id}", response.Headers.Location?.OriginalString);
         Assert.Equal("http-request", job.GetProperty("type").GetString());
+        Assert.Equal("test-app", job.GetProperty("applicationId").GetString());
         Assert.Equal("High", job.GetProperty("priority").GetString());
         Assert.Equal("Queued", job.GetProperty("status").GetString());
         Assert.Equal("http://localhost/contract-test", job.GetProperty("payload").GetProperty("url").GetString());
@@ -314,7 +317,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         JobAttempt second = new(Guid.NewGuid(), jobId, 2, "worker-02", start.AddSeconds(5));
         await using (TaskForgeDbContext context = new(DatabaseOptions))
         {
-            Job unrelated = new(Guid.NewGuid(), "example", "{}", JobPriority.Normal, 0, 5, start);
+            Job unrelated = new(Guid.NewGuid(), "test-app", "example", "{}", JobPriority.Normal, 0, 5, start);
             context.Jobs.Add(unrelated);
             context.JobAttempts.AddRange(second, first, new JobAttempt(Guid.NewGuid(), unrelated.Id, 1, "other-worker", start));
             await context.SaveChangesAsync();
@@ -342,6 +345,96 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.False(attempts[0].TryGetProperty("id", out _));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("a/project")]
+    [InlineData("a project")]
+    [InlineData("\u00e4-project")]
+    public async Task Invalid_application_id_returns_validation_problem_without_persistence(string? applicationId)
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        using HttpResponseMessage response = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: applicationId!));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.NotEmpty(body.GetProperty("errors").GetProperty("ApplicationId").EnumerateArray());
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        Assert.Empty(await context.Jobs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Missing_application_id_is_rejected_and_submission_defaults_are_preserved()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        object payload = new { url = "http://localhost/defaults", method = "GET" };
+        using HttpResponseMessage missing = await client.PostAsJsonAsync("/api/jobs", new { type = "http-request", payload });
+
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        JsonElement problem = await missing.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(problem.GetProperty("errors").TryGetProperty("ApplicationId", out _));
+        using HttpResponseMessage accepted = await client.PostAsJsonAsync("/api/jobs", new { applicationId = " A-Project ", type = "http-request", payload });
+        Assert.Equal(HttpStatusCode.Created, accepted.StatusCode);
+        JsonElement job = await accepted.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("a-project", job.GetProperty("applicationId").GetString());
+        Assert.Equal("Normal", job.GetProperty("priority").GetString());
+        Assert.Equal(3, job.GetProperty("maxRetries").GetInt32());
+        Assert.Equal(30, job.GetProperty("timeoutSeconds").GetInt32());
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        Assert.Single(await context.Jobs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Application_id_length_is_validated_at_http_boundary()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        string maximum = new('A', 100);
+        using HttpResponseMessage accepted = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: $" {maximum} "));
+        using HttpResponseMessage rejected = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: maximum + "a"));
+
+        Assert.Equal(HttpStatusCode.Created, accepted.StatusCode);
+        Assert.Equal(maximum.ToLowerInvariant(), (await accepted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("applicationId").GetString());
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        Assert.True((await rejected.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("errors").TryGetProperty("ApplicationId", out _));
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        Assert.Single(await context.Jobs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Applications_have_independent_idempotency_and_normalized_list_filters()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("Idempotency-Key", "shared-key");
+        using HttpResponseMessage first = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: " A-Project "));
+        using HttpResponseMessage second = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: "b-project"));
+        using HttpResponseMessage duplicate = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: "A-PROJECT"));
+        using HttpResponseMessage conflict = await client.PostAsJsonAsync("/api/jobs", ValidJob("Low", "a-project"));
+
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, duplicate.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        Guid firstId = (await first.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        Guid secondId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        Assert.NotEqual(firstId, secondId);
+        Assert.Equal(firstId, (await duplicate.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid());
+
+        using HttpResponseMessage filtered = await client.GetAsync("/api/jobs?applicationId=%20A-PROJECT%20&status=Queued&priority=High&pageSize=1");
+        Assert.Equal(HttpStatusCode.OK, filtered.StatusCode);
+        JsonElement page = await filtered.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, page.GetProperty("totalCount").GetInt32());
+        Assert.Equal(firstId, Assert.Single(page.GetProperty("items").EnumerateArray()).GetProperty("id").GetGuid());
+        using HttpResponseMessage all = await client.GetAsync("/api/jobs");
+        Assert.Equal(2, (await all.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("totalCount").GetInt32());
+        using HttpResponseMessage invalidFilter = await client.GetAsync("/api/jobs?applicationId=a%2Fb");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidFilter.StatusCode);
+    }
+
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
@@ -349,8 +442,9 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         builder.UseSetting("HttpRequestJobs:AllowedHosts:0", "localhost");
     });
 
-    private static object ValidJob(string priority = "High") => new
+    private static object ValidJob(string priority = "High", string applicationId = "test-app") => new
     {
+        applicationId,
         type = "http-request",
         payload = new { url = "http://localhost/contract-test", method = "GET" },
         priority,

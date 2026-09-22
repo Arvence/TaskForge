@@ -4,30 +4,11 @@ using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Api.Jobs;
 
-public sealed record JobResponse(
-    Guid Id,
-    string Type,
-    JsonElement Payload,
-    string? IdempotencyKey,
-    JsonElement? Result,
-    JobPriority Priority,
-    JobStatus Status,
-    int MaxRetries,
-    int RetryCount,
-    int TimeoutSeconds,
-    bool CancellationRequested,
-    DateTimeOffset CreatedAtUtc,
-    DateTimeOffset UpdatedAtUtc,
-    DateTimeOffset? QueuedAtUtc,
-    DateTimeOffset? StartedAtUtc,
-    DateTimeOffset? CompletedAtUtc,
-    DateTimeOffset? NextRetryAtUtc,
-    string? OwningWorkerId,
-    DateTimeOffset? LeaseExpiresAtUtc,
-    string? LastError)
+public sealed record JobResponse(Guid Id, string ApplicationId, string Type, JsonElement Payload, string? IdempotencyKey, JsonElement? Result, JobPriority Priority, JobStatus Status, int MaxRetries, int RetryCount, int TimeoutSeconds, bool CancellationRequested, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, DateTimeOffset? QueuedAtUtc, DateTimeOffset? StartedAtUtc, DateTimeOffset? CompletedAtUtc, DateTimeOffset? NextRetryAtUtc, string? OwningWorkerId, DateTimeOffset? LeaseExpiresAtUtc, string? LastError)
 {
     public static JobResponse From(Job job) => new(
         job.Id,
+        job.ApplicationId,
         job.Type,
         JsonSerializer.Deserialize<JsonElement>(job.PayloadJson),
         job.IdempotencyKey,

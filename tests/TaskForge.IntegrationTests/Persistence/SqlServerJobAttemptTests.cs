@@ -170,7 +170,7 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
 
     private async Task<Guid> AddQueuedJobAsync()
     {
-        Job job = new(Guid.NewGuid(), "example", "{}", JobPriority.Normal, 2, 5, Now);
+        Job job = new(Guid.NewGuid(), "test-app", "example", "{}", JobPriority.Normal, 2, 5, Now);
         job.Queue(Now);
         await using TaskForgeDbContext context = new(DatabaseOptions);
         await new EfCoreJobStore(context).AddAsync(job);

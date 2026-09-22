@@ -17,9 +17,7 @@ public interface IJobRepository
 
     Task<Job?> FindAsync(Guid id, CancellationToken cancellationToken = default);
 
-    Task<Job?> FindByIdempotencyKeyAsync(
-        string idempotencyKey,
-        CancellationToken cancellationToken = default);
+    Task<Job?> FindByIdempotencyKeyAsync(string applicationId, string idempotencyKey, CancellationToken cancellationToken = default);
 
     Task<bool> TryUpdateAsync(
         Job job,

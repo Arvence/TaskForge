@@ -7,6 +7,7 @@ namespace TaskForge.Api.Jobs;
 
 public sealed record SubmitJobRequest
 {
+    public string ApplicationId { get; init; } = string.Empty;
     public string Type { get; init; } = string.Empty;
     public JsonElement Payload { get; init; }
     public JobPriority Priority { get; init; } = JobPriority.Normal;
@@ -14,6 +15,7 @@ public sealed record SubmitJobRequest
     public int TimeoutSeconds { get; init; } = 30;
 
     public SubmitJobCommand ToCommand() => new(
+        ApplicationId,
         Type,
         Payload.ValueKind is JsonValueKind.Undefined
             ? string.Empty

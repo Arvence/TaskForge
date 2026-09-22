@@ -32,6 +32,7 @@ public sealed class JobManager(
         string? normalizedIdempotencyKey = idempotencyKey?.Trim();
         Job job = new(
             Guid.NewGuid(),
+            command.ApplicationId,
             command.Type.Trim(),
             command.PayloadJson,
             command.Priority,
@@ -67,7 +68,7 @@ public sealed class JobManager(
             return new JobReplayResult(JobReplayStatus.InvalidState, source);
         }
 
-        SubmitJobCommand command = new(source.Type, source.PayloadJson, source.Priority, source.MaxRetries, source.TimeoutSeconds);
+        SubmitJobCommand command = new(source.ApplicationId, source.Type, source.PayloadJson, source.Priority, source.MaxRetries, source.TimeoutSeconds);
         JobSubmissionResult replay = await SubmitAsync(command, idempotencyKey: null, cancellationToken);
         return new JobReplayResult(JobReplayStatus.Created, replay.Job);
     }
@@ -79,6 +80,11 @@ public sealed class JobManager(
         ArgumentNullException.ThrowIfNull(query);
 
         Dictionary<string, string[]> errors = [];
+        if (query.ApplicationId is not null && !JobApplicationId.IsValid(query.ApplicationId))
+        {
+            errors["ApplicationId"] = ["Application ID must contain 1 to 100 ASCII letters, digits, dots, underscores, or hyphens."];
+        }
+
         if (query.Status is not null && !Enum.IsDefined(query.Status.Value))
         {
             errors["Status"] = ["Job status is invalid."];
@@ -115,6 +121,7 @@ public sealed class JobManager(
 
         ListJobsQuery normalizedQuery = query with
         {
+            ApplicationId = query.ApplicationId is null ? null : JobApplicationId.Normalize(query.ApplicationId),
             Type = query.Type?.Trim()
         };
         return jobRepository.GetPageAsync(normalizedQuery, cancellationToken);
@@ -126,7 +133,8 @@ public sealed class JobManager(
         jobRepository.FindAsync(id, cancellationToken);
 
     private static bool HasSameSubmission(Job existing, Job candidate) =>
-        existing.Type == candidate.Type
+        existing.ApplicationId == candidate.ApplicationId
+        && existing.Type == candidate.Type
         && existing.PayloadJson == candidate.PayloadJson
         && existing.Priority == candidate.Priority
         && existing.MaxRetries == candidate.MaxRetries

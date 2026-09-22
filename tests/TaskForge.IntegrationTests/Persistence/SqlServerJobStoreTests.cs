@@ -17,6 +17,7 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
 
         Job job = new(
             Guid.Parse("7c077bba-bab3-4e20-a47f-a0ec51838a18"),
+            "test-app",
             "generate-report",
             """{"reportName":"Monthly report"}""",
             JobPriority.High,
@@ -38,6 +39,7 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
 
         Assert.NotNull(persistedJob);
         Assert.Equal(job.Type, persistedJob.Type);
+        Assert.Equal(job.ApplicationId, persistedJob.ApplicationId);
         Assert.Equal(job.PayloadJson, persistedJob.PayloadJson);
         Assert.Equal(JobPriority.High, persistedJob.Priority);
         Assert.Equal(JobStatus.Queued, persistedJob.Status);
@@ -188,6 +190,7 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         Job lowPriority = CreateJob(Guid.NewGuid(), now.AddMinutes(-2));
         Job highPriority = new(
             Guid.NewGuid(),
+            "test-app",
             "example",
             """{"value":1}""",
             JobPriority.High,
@@ -223,6 +226,7 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
             new(2026, 7, 20, 12, 10, 0, TimeSpan.Zero);
         Job original = new(
             Guid.NewGuid(),
+            "test-app",
             "example",
             """{"value":1}""",
             JobPriority.Normal,
@@ -239,6 +243,7 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
 
         Job duplicate = new(
             Guid.NewGuid(),
+            "test-app",
             original.Type,
             original.PayloadJson,
             original.Priority,
@@ -280,6 +285,11 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
     public async Task Concurrent_idempotent_submissions_return_the_same_job()
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using (TaskForgeDbContext setupContext = new(DatabaseOptions))
+        {
+            await new EfCoreJobStore(setupContext).AddAsync(CreateJob(Guid.NewGuid(), now, idempotencyKey: "request-123", applicationId: "other-app"));
+        }
+
         DbContextOptions<TaskForgeDbContext> options = new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions)
             .AddInterceptors(new ConcurrentSaveInterceptor())
             .Options;
@@ -294,7 +304,54 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
 
         Assert.Equal(results[0].Id, results[1].Id);
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
-        Assert.Equal(results[0].Id, (await readContext.Jobs.SingleAsync()).Id);
+        Assert.Equal(2, await readContext.Jobs.CountAsync());
+        Assert.Equal(results[0].Id, (await readContext.Jobs.SingleAsync(job => job.ApplicationId == "test-app")).Id);
+    }
+
+    [Fact]
+    public async Task Concurrent_submissions_in_different_applications_can_reuse_the_same_key()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DbContextOptions<TaskForgeDbContext> options = new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions)
+            .AddInterceptors(new ConcurrentSaveInterceptor())
+            .Options;
+        await using TaskForgeDbContext firstContext = new(options);
+        await using TaskForgeDbContext secondContext = new(options);
+        Job first = CreateJob(Guid.NewGuid(), now, idempotencyKey: "shared", applicationId: "a-project");
+        Job second = CreateJob(Guid.NewGuid(), now, idempotencyKey: "shared", applicationId: "b-project");
+
+        Job[] results = await Task.WhenAll(
+            new EfCoreJobStore(firstContext).AddOrGetExistingAsync(first),
+            new EfCoreJobStore(secondContext).AddOrGetExistingAsync(second));
+
+        Assert.NotEqual(results[0].Id, results[1].Id);
+        await using TaskForgeDbContext readContext = new(DatabaseOptions);
+        EfCoreJobStore store = new(readContext);
+        Assert.Equal(2, await readContext.Jobs.CountAsync());
+        Assert.Equal(first.Id, (await store.FindByIdempotencyKeyAsync("a-project", "shared"))!.Id);
+        Assert.Equal(second.Id, (await store.FindByIdempotencyKeyAsync("b-project", "shared"))!.Id);
+        Assert.Null(await store.FindByIdempotencyKeyAsync("missing", "shared"));
+    }
+
+    [Fact]
+    public async Task Application_filter_applies_before_database_pagination()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using TaskForgeDbContext context = new(DatabaseOptions);
+        Job older = CreateJob(Guid.NewGuid(), now, applicationId: "a-project");
+        Job unrelated = CreateJob(Guid.NewGuid(), now.AddMinutes(1), applicationId: "b-project");
+        Job newer = CreateJob(Guid.NewGuid(), now.AddMinutes(2), applicationId: "a-project");
+        context.Jobs.AddRange(older, unrelated, newer);
+        await context.SaveChangesAsync();
+
+        EfCoreJobStore store = new(context);
+        JobPage page = await store.GetPageAsync(new ListJobsQuery(Status: JobStatus.Queued, Type: "generate-report", Page: 2, PageSize: 1, ApplicationId: "a-project"));
+
+        Assert.Equal(2, page.TotalCount);
+        Assert.Equal(2, page.TotalPages);
+        Assert.Equal(older.Id, Assert.Single(page.Items).Id);
+        Assert.Equal(3, (await store.GetPageAsync(new ListJobsQuery())).TotalCount);
+        Assert.Empty((await store.GetPageAsync(new ListJobsQuery(ApplicationId: "missing"))).Items);
     }
 
     [Fact]
@@ -379,17 +436,18 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
 
     private static Job CreateRetryJob(DateTimeOffset createdAt, DateTimeOffset dueAt, JobPriority priority)
     {
-        Job job = new(Guid.NewGuid(), "example", "{}", priority, 3, 30, createdAt);
+        Job job = new(Guid.NewGuid(), "test-app", "example", "{}", priority, 3, 30, createdAt);
         job.Queue(createdAt);
         job.StartProcessing("previous-worker", createdAt.AddMinutes(1), createdAt);
         job.Fail("Expected failure.", dueAt, createdAt.AddSeconds(1));
         return job;
     }
 
-    private static Job CreateJob(Guid id, DateTimeOffset createdAt, string type = "generate-report", string? idempotencyKey = null)
+    private static Job CreateJob(Guid id, DateTimeOffset createdAt, string type = "generate-report", string? idempotencyKey = null, string applicationId = "test-app")
     {
         Job job = new(
             id,
+            applicationId,
             type,
             """{"reportName":"Monthly report"}""",
             JobPriority.Normal,
