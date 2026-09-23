@@ -15,6 +15,7 @@ public static class SqlServerPersistenceExtensions
         services.AddDbContext<TaskForgeDbContext>(options =>
             options.UseSqlServer(connectionString, sqlServerOptions => sqlServerOptions.EnableRetryOnFailure()));
         services.AddScoped<EfCoreJobStore>();
+        services.AddScoped<IExecutionStore, EfCoreExecutionStore>();
         services.AddScoped<IJobRepository>(serviceProvider => serviceProvider.GetRequiredService<EfCoreJobStore>());
         services.AddScoped<IJobAttemptReader>(serviceProvider => serviceProvider.GetRequiredService<EfCoreJobStore>());
         services.AddScoped<IJobStatisticsReader, EfCoreJobStatisticsReader>();
