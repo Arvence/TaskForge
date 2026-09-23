@@ -11,6 +11,102 @@ namespace TaskForge.Infrastructure.Persistence;
 public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
     : IJobRepository, IJobQueue, IJobAttemptReader
 {
+    private const int MaximumDistributionAttempts = 5;
+
+    public async Task<JobExecutionAssignment?> TryDistributeAsync(string applicationId, string workerId, IReadOnlyCollection<string> supportedTypes, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        applicationId = JobApplicationId.Normalize(applicationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workerId);
+        ArgumentNullException.ThrowIfNull(supportedTypes);
+        if (workerId.Length > 200)
+        {
+            throw new ArgumentException("Worker ID cannot exceed 200 characters.", nameof(workerId));
+        }
+
+        if (leaseGracePeriod <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(leaseGracePeriod), "The lease grace period must be positive.");
+        }
+
+        if (supportedTypes.Any(type => string.IsNullOrWhiteSpace(type) || type.Length > 100))
+        {
+            throw new ArgumentException("Supported types must contain 1 to 100 characters.", nameof(supportedTypes));
+        }
+
+        string[] types = supportedTypes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (types.Length == 0)
+        {
+            return null;
+        }
+
+        return await dbContext.Database.CreateExecutionStrategy().ExecuteAsync(
+            () => TryDistributeCoreAsync(applicationId, workerId, types, leaseGracePeriod, now, cancellationToken));
+    }
+
+    private async Task<JobExecutionAssignment?> TryDistributeCoreAsync(string applicationId, string workerId, string[] types, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        for (int acquisition = 0; acquisition < MaximumDistributionAttempts; acquisition++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            dbContext.ChangeTracker.Clear();
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                Job? job = await dbContext.Jobs.AsNoTracking()
+                    .Where(candidate => candidate.ApplicationId == applicationId && types.Contains(candidate.Type))
+                    .Where(candidate => candidate.Status == JobStatus.Queued
+                        || (candidate.Status == JobStatus.Retrying && candidate.NextRetryAtUtc != null && candidate.NextRetryAtUtc <= now))
+                    .OrderByDescending(candidate => candidate.Priority)
+                    .ThenBy(candidate => candidate.NextRetryAtUtc ?? candidate.QueuedAtUtc)
+                    .ThenBy(candidate => candidate.CreatedAtUtc)
+                    .ThenBy(candidate => candidate.Id)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (job is null)
+                {
+                    return null;
+                }
+
+                int lastNumber = await dbContext.JobAttempts
+                    .Where(attempt => attempt.JobId == job.Id)
+                    .Select(attempt => (int?)attempt.AttemptNumber)
+                    .MaxAsync(cancellationToken) ?? 0;
+                JobAttempt attempt = new(Guid.NewGuid(), job.Id, checked(lastNumber + 1), workerId, now);
+                JobExecutionAssignment assignment = new(job, attempt);
+                long expectedVersion = job.Version;
+                if (job.Status == JobStatus.Retrying)
+                {
+                    job.QueueRetry(now);
+                }
+
+                job.StartProcessing(workerId, assignment.DeadlineAtUtc.Add(leaseGracePeriod), attempt.StartedAtUtc);
+                dbContext.Jobs.Update(job);
+                dbContext.Entry(job).Property(candidate => candidate.Version).OriginalValue = expectedVersion;
+                dbContext.JobAttempts.Add(attempt);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return assignment;
+            }
+            catch (Exception exception) when (IsDistributionConflict(exception))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                dbContext.ChangeTracker.Clear();
+            }
+            catch
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                dbContext.ChangeTracker.Clear();
+                throw;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsDistributionConflict(Exception exception) =>
+        exception is DbUpdateConcurrencyException
+        || exception is SqlException { Number: 1205 }
+        || exception is DbUpdateException { InnerException: SqlException { Number: 1205 or 2601 or 2627 } };
+
     public async Task AddAsync(Job job, CancellationToken cancellationToken = default)
     {
         dbContext.Jobs.Add(job);
