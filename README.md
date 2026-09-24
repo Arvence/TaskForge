@@ -186,18 +186,23 @@ flowchart LR
     Processing -->|Retryable failure or timeout| Retrying
     Retrying -->|Retry due| Queued
     Processing -->|Permanent failure or retries exhausted| DeadLettered
-    Processing -->|Lease expired| Queued
+    Processing -->|Lease expired, retries remain| Retrying
     Pending -->|Cancel| Cancelled
     Queued -->|Cancel| Cancelled
     Retrying -->|Cancel| Cancelled
-    Processing -->|Cancellation confirmed| Cancelled
+    Processing -->|Cancel before deadline| Cancelled
 ```
 
 `Pending` is the initial domain state; accepted submissions are stored as
 `Queued`. Retries wait for their backoff before becoming eligible again.
-Lease recovery requeues interrupted work unless cancellation was requested,
-in which case it becomes `Cancelled`. Cancelling a running job first sets a
-cancellation request; the terminal state is persisted afterward.
+Lease recovery applies the timeout retry budget and backoff to interrupted work,
+ending in `DeadLettered` when retries are exhausted. Requested cancellation wins
+and becomes `Cancelled` without consuming a retry. Cancelling a running job before
+its deadline atomically cancels the job and running attempt and clears ownership.
+Cancellation uses persistent server state and does not require a connected client.
+It does not confirm that remote code has stopped. If the deadline has passed,
+timeout is resolved first: cancellation then cancels the retrying job, or returns
+`409` if timeout exhausted its retries. Complete and Fail reject cancelled executions.
 
 ## API Endpoints
 
@@ -332,8 +337,9 @@ Example `200 OK` response for a job cancelled while queued:
 }
 ```
 
-An unknown job returns `404`; an already finished job or a conflicting update
-returns `409`.
+Repeated cancellation of a cancelled job returns `200` without changing it.
+An unknown job returns `404`; a completed or dead-lettered job or a conflicting
+update returns `409`.
 
 ### Replay a job
 
@@ -432,5 +438,7 @@ The workflow does not publish or deploy the image.
 - Only registered handlers execute; supported job types are `http-request` and
   `generate-report`. Job payloads and headers are readable through the API and should
   not contain secrets.
-- Attempt history covers new executions only. For expired leases, the recorded
-  finish time is when abandonment was detected, not the exact interruption time.
+- Legacy acquisitions without attempts receive one `LegacyLeaseRecovery` history
+  entry using their persisted worker and acquisition time. This does not confirm
+  that execution started. Recovery finish times record detection, not the exact
+  interruption time. Ambiguous ownership is logged and held for investigation.
