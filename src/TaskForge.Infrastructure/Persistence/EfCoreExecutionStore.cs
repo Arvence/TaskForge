@@ -153,12 +153,17 @@ public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryP
             return new(ExecutionResult.Conflicting);
         }
 
+        JobExecutionAssignment assignment = new(job, attempt);
+        if (attempt.Outcome is JobAttemptOutcome.Failed or JobAttemptOutcome.PermanentlyFailed)
+        {
+            return new(ExecutionResult.Duplicate, assignment);
+        }
+
         if (await dbContext.JobAttempts.AnyAsync(candidate => candidate.JobId == job.Id && candidate.AttemptNumber > attempt.AttemptNumber, cancellationToken))
         {
             return new(ExecutionResult.Stale);
         }
 
-        JobExecutionAssignment assignment = new(job, attempt);
         if (attempt.Outcome != JobAttemptOutcome.Running)
         {
             ExecutionResult finished = attempt.Outcome switch
@@ -200,7 +205,7 @@ public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryP
         bool duplicate = report switch
         {
             ExecutionReport.Complete complete => attempt.Outcome == JobAttemptOutcome.Succeeded && job.ResultJson == complete.ResultJson,
-            ExecutionReport.Fail fail => attempt.Outcome == (fail.Retryable ? JobAttemptOutcome.Failed : JobAttemptOutcome.PermanentlyFailed)
+            ExecutionReport.Fail fail => attempt.Outcome is JobAttemptOutcome.Failed or JobAttemptOutcome.PermanentlyFailed
                 && attempt.ErrorCode == fail.ErrorCode && attempt.ErrorMessage == fail.ErrorMessage,
             _ => false
         };
@@ -214,7 +219,7 @@ public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryP
         _ => report switch
         {
             ExecutionReport.Complete => JobAttemptOutcome.Succeeded,
-            ExecutionReport.Fail fail => fail.Retryable ? JobAttemptOutcome.Failed : JobAttemptOutcome.PermanentlyFailed,
+            ExecutionReport.Fail fail => JobFailurePolicy.IsPermanent(fail.ErrorCode) ? JobAttemptOutcome.PermanentlyFailed : JobAttemptOutcome.Failed,
             _ => throw new InvalidOperationException("The execution report is not valid for an active execution.")
         }
     };

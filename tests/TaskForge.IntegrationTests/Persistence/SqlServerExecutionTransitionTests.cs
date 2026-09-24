@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Text.Json;
 
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -133,7 +134,8 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
             current = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), recoveredAt))!;
         }
 
-        Assert.Equal(ExecutionResult.Stale, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Complete("old report")));
+        Assert.Equal(ExecutionResult.Stale, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Complete("\"old report\"")));
+        Assert.Equal(ExecutionResult.Stale, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Fail("Failure", "Stale failure.")));
         Assert.Empty(staleContext.ChangeTracker.Entries());
         await AssertRunningAsync(current);
         await using TaskForgeDbContext read = new(ExecutionOptions);
@@ -143,15 +145,15 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
     }
 
     [Theory]
-    [InlineData(true, 3, JobStatus.Retrying, JobAttemptOutcome.Failed, 1)]
-    [InlineData(true, 0, JobStatus.DeadLettered, JobAttemptOutcome.Failed, 1)]
-    [InlineData(false, 3, JobStatus.DeadLettered, JobAttemptOutcome.PermanentlyFailed, 0)]
-    public async Task Failure_uses_server_retry_policy_and_matching_repeats_are_immutable(bool retryable, int maxRetries, JobStatus status, JobAttemptOutcome outcome, int retryCount)
+    [InlineData("Failure", 3, JobStatus.Retrying, JobAttemptOutcome.Failed, 1)]
+    [InlineData("Failure", 0, JobStatus.DeadLettered, JobAttemptOutcome.Failed, 1)]
+    [InlineData("InvalidPayload", 3, JobStatus.DeadLettered, JobAttemptOutcome.PermanentlyFailed, 0)]
+    public async Task Failure_uses_server_retry_policy_and_matching_repeats_are_immutable(string errorCode, int maxRetries, JobStatus status, JobAttemptOutcome outcome, int retryCount)
     {
         JobExecutionAssignment assignment = await AssignAsync(maxRetries: maxRetries);
         await using TaskForgeDbContext context = new(ExecutionOptions);
         EfCoreExecutionStore store = Store(context);
-        ExecutionReport.Fail report = new("Failure", "Execution failed.", retryable);
+        ExecutionReport.Fail report = new(errorCode, "Execution failed.");
 
         Assert.Equal(ExecutionResult.Accepted, await store.TransitionAsync(Identity(assignment), report));
         Assert.Equal(ExecutionResult.Duplicate, await store.TransitionAsync(Identity(assignment), report));
@@ -203,7 +205,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
 
         Assert.Equal(ExecutionResult.TimedOut, (await store.FindExecutionAsync(Identity(assignment))).Result);
         Assert.Equal(ExecutionResult.TimedOut, await store.TransitionAsync(Identity(assignment), new ExecutionReport.Timeout()));
-        Assert.Equal(ExecutionResult.TimedOut, await store.TransitionAsync(Identity(assignment), new ExecutionReport.Complete("late")));
+        Assert.Equal(ExecutionResult.TimedOut, await store.TransitionAsync(Identity(assignment), new ExecutionReport.Complete("\"late\"")));
 
         Job job = await context.Jobs.SingleAsync();
         JobAttempt attempt = await context.JobAttempts.SingleAsync();
@@ -226,7 +228,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         long requestedVersion = job.Version;
         EfCoreExecutionStore store = Store(context);
 
-        Assert.Equal(ExecutionResult.Cancelled, await store.TransitionAsync(Identity(assignment), new ExecutionReport.Complete("ignored")));
+        Assert.Equal(ExecutionResult.Cancelled, await store.TransitionAsync(Identity(assignment), new ExecutionReport.Complete("\"ignored\"")));
         Assert.Equal(ExecutionResult.Cancelled, await store.TransitionAsync(Identity(assignment), new ExecutionReport.Cancel()));
 
         Job persisted = await context.Jobs.SingleAsync();
@@ -253,23 +255,25 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Concurrent_reports_commit_exactly_one_transition(bool competingFailure)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Concurrent_reports_commit_exactly_one_transition(bool competingFailure, bool conflictingSuccess)
     {
         JobExecutionAssignment assignment = await AssignAsync();
         PairReadsInterceptor barrier = new();
         await using TaskForgeDbContext first = new(With(barrier));
         await using TaskForgeDbContext second = new(With(barrier));
         ExecutionReport firstReport = new ExecutionReport.Complete("{}"), secondReport = competingFailure
-            ? new ExecutionReport.Fail("Failure", "Execution failed.") : firstReport;
+            ? new ExecutionReport.Fail("Failure", "Execution failed.")
+            : conflictingSuccess ? new ExecutionReport.Complete("[]") : firstReport;
 
         ExecutionResult[] results = await Task.WhenAll(
             Store(first).TransitionAsync(Identity(assignment), firstReport),
             Store(second).TransitionAsync(Identity(assignment), secondReport));
 
         Assert.Single(results, result => result == ExecutionResult.Accepted);
-        Assert.Single(results, result => result == (competingFailure ? ExecutionResult.Conflicting : ExecutionResult.Duplicate));
+        Assert.Single(results, result => result == (competingFailure || conflictingSuccess ? ExecutionResult.Conflicting : ExecutionResult.Duplicate));
         await using TaskForgeDbContext read = new(ExecutionOptions);
         Job job = await read.Jobs.SingleAsync();
         JobAttempt attempt = await read.JobAttempts.SingleAsync();
@@ -277,6 +281,26 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         Assert.Equal(job.UpdatedAtUtc, attempt.FinishedAtUtc);
         Assert.Equal(job.Status == JobStatus.Completed ? JobAttemptOutcome.Succeeded : JobAttemptOutcome.Failed, attempt.Outcome);
         Assert.Null(job.OwningWorkerId);
+        Assert.Equal(results[0] == ExecutionResult.Accepted ? "{}" : conflictingSuccess ? "[]" : competingFailure ? null : "{}", job.ResultJson);
+    }
+
+    [Theory]
+    [InlineData(null, "null")]
+    [InlineData(" { \"value\" : \"a\" } ", "{\"value\":\"\\u0061\"}")]
+    public async Task Duplicate_after_original_deadline_preserves_entire_job_and_history(string? first, string repeated)
+    {
+        JobExecutionAssignment assignment = await AssignAsync();
+        await using TaskForgeDbContext context = new(ExecutionOptions);
+        Assert.Equal(ExecutionResult.Accepted, await Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Complete(first)));
+        string jobSnapshot = JsonSerializer.Serialize(await context.Jobs.AsNoTracking().SingleAsync());
+        string historySnapshot = JsonSerializer.Serialize(await context.JobAttempts.AsNoTracking().ToArrayAsync());
+
+        await using TaskForgeDbContext late = new(With(new FixedSqlClockInterceptor(assignment.DeadlineAtUtc.AddHours(1))));
+        Assert.Equal(ExecutionResult.Duplicate, await Store(late).TransitionAsync(Identity(assignment), new ExecutionReport.Complete(repeated)));
+        Assert.Equal(ExecutionResult.Conflicting, await Store(late).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("false")));
+
+        Assert.Equal(jobSnapshot, JsonSerializer.Serialize(await context.Jobs.AsNoTracking().SingleAsync()));
+        Assert.Equal(historySnapshot, JsonSerializer.Serialize(await context.JobAttempts.AsNoTracking().ToArrayAsync()));
     }
 
     [Fact]
@@ -288,7 +312,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         await blocker.Database.ExecuteSqlInterpolatedAsync($"UPDATE [Jobs] SET [Version] = [Version] WHERE [Id] = {assignment.Job.Id}");
         PauseCommandInterceptor pause = new(pauseWrite: false);
         await using TaskForgeDbContext reporting = new(With(pause));
-        Task<ExecutionResult> report = Store(reporting).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("late"));
+        Task<ExecutionResult> report = Store(reporting).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("\"late\""));
         await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         pause.Release.TrySetResult();
         try
@@ -310,7 +334,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         JobExecutionAssignment assignment = await AssignAsync(timeoutSeconds: 3);
         PauseCommandInterceptor pause = new(pauseWrite: true);
         await using TaskForgeDbContext context = new(With(pause));
-        Task<ExecutionResult> report = Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("late"));
+        Task<ExecutionResult> report = Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("\"late\""));
         await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         try
         {
@@ -327,20 +351,125 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Failure_between_or_after_writes_rolls_back_full_transaction(bool afterAttemptWrite)
+    [InlineData(false, "complete")]
+    [InlineData(true, "complete")]
+    [InlineData(false, "failure")]
+    [InlineData(true, "failure")]
+    [InlineData(false, "permanent")]
+    [InlineData(true, "permanent")]
+    public async Task Failure_between_or_after_writes_rolls_back_full_transaction(bool afterAttemptWrite, string operation)
     {
         JobExecutionAssignment assignment = await AssignAsync();
         FailAttemptWriteInterceptor failure = new(afterAttemptWrite);
         await using TaskForgeDbContext context = new(With(failure));
+        ExecutionReport report = operation == "complete" ? new ExecutionReport.Complete("{}")
+            : new ExecutionReport.Fail(operation == "permanent" ? "InvalidPayload" : "Failure", "Failed.");
 
-        await Assert.ThrowsAsync<InjectedPersistenceException>(() => Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("{}")));
+        await Assert.ThrowsAsync<InjectedPersistenceException>(() => Store(context).TransitionAsync(Identity(assignment), report));
 
         Assert.True(failure.Injected);
         Assert.Empty(context.ChangeTracker.Entries());
         await AssertRunningAsync(assignment);
-        Assert.Equal(ExecutionResult.Accepted, await Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("{}")));
+        Assert.Equal(ExecutionResult.Accepted, await Store(context).TransitionAsync(Identity(assignment), report));
+    }
+
+    [Fact]
+    public async Task Failure_schedule_uses_conditional_write_time_instead_of_initial_read_time()
+    {
+        JobExecutionAssignment assignment = await AssignAsync();
+        AdvancingSqlClockInterceptor clock = new(assignment.Attempt.StartedAtUtc);
+        await using TaskForgeDbContext context = new(With(clock));
+
+        Assert.Equal(ExecutionResult.Accepted, await Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Fail("Unknown", "Failed.")));
+
+        Job job = await context.Jobs.SingleAsync();
+        JobAttempt attempt = await context.JobAttempts.SingleAsync();
+        Assert.Equal(3, clock.ClockReads);
+        Assert.Equal(assignment.Attempt.StartedAtUtc.AddSeconds(3), attempt.FinishedAtUtc);
+        Assert.Equal(attempt.FinishedAtUtc, job.UpdatedAtUtc);
+        Assert.Equal(attempt.FinishedAtUtc!.Value.AddSeconds(7), job.NextRetryAtUtc);
+    }
+
+    [Fact]
+    public async Task Repeated_failures_use_capped_delays_then_exhaust_server_budget()
+    {
+        JobExecutionAssignment assignment = await AssignAsync(maxRetries: 3);
+        DateTimeOffset now = assignment.Attempt.StartedAtUtc.AddSeconds(1);
+        int[] delays = [7, 14, 20];
+        for (int failure = 0; failure < 4; failure++)
+        {
+            await using TaskForgeDbContext context = new(With(new FixedSqlClockInterceptor(now)));
+            Assert.Equal(ExecutionResult.Accepted, await Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Fail("Unknown", "Failed.")));
+            Job job = await context.Jobs.AsNoTracking().SingleAsync();
+            JobAttempt attempt = await context.JobAttempts.AsNoTracking().SingleAsync(candidate => candidate.Id == assignment.AttemptId);
+            Assert.Equal(failure + 1, job.RetryCount);
+            Assert.Equal(JobAttemptOutcome.Failed, attempt.Outcome);
+            Assert.Equal(now, attempt.FinishedAtUtc);
+            Assert.Equal(now, job.UpdatedAtUtc);
+            if (failure < 3)
+            {
+                Assert.Equal(JobStatus.Retrying, job.Status);
+                Assert.Equal(now.AddSeconds(delays[failure]), job.NextRetryAtUtc);
+                now = job.NextRetryAtUtc!.Value;
+                assignment = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), now))!;
+                Assert.NotNull(assignment);
+                now = now.AddSeconds(1);
+            }
+            else
+            {
+                Assert.Equal(JobStatus.DeadLettered, job.Status);
+                Assert.Null(job.NextRetryAtUtc);
+                Assert.Equal(ExecutionResult.Duplicate, await Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Fail(" unknown ", " Failed. ")));
+                Assert.Equal(4, (await context.Jobs.AsNoTracking().SingleAsync()).RetryCount);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Historical_failure_duplicate_after_deadline_preserves_current_attempt()
+    {
+        JobExecutionAssignment old = await AssignAsync();
+        await using TaskForgeDbContext context = new(ExecutionOptions);
+        Assert.Equal(ExecutionResult.Accepted, await Store(context).TransitionAsync(Identity(old), new ExecutionReport.Fail("Unknown", "Failed.")));
+        Job job = await context.Jobs.AsNoTracking().SingleAsync();
+        JobExecutionAssignment current = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "new-worker", ["example"], TimeSpan.FromSeconds(30), job.NextRetryAtUtc!.Value))!;
+        Assert.NotNull(current);
+        string before = JsonSerializer.Serialize(await context.Jobs.AsNoTracking().SingleAsync());
+        string history = JsonSerializer.Serialize(await context.JobAttempts.AsNoTracking().OrderBy(attempt => attempt.AttemptNumber).ToArrayAsync());
+        await using TaskForgeDbContext late = new(With(new FixedSqlClockInterceptor(old.DeadlineAtUtc.AddHours(1))));
+
+        Assert.Equal(ExecutionResult.Duplicate, await Store(late).TransitionAsync(Identity(old), new ExecutionReport.Fail(" UNKNOWN ", " Failed. ")));
+        Assert.Equal(ExecutionResult.Conflicting, await Store(late).TransitionAsync(Identity(old), new ExecutionReport.Fail("unknown", "Changed.")));
+        Assert.Equal(ExecutionResult.Conflicting, await Store(late).TransitionAsync(Identity(old), new ExecutionReport.Complete()));
+
+        Assert.Equal(before, JsonSerializer.Serialize(await context.Jobs.AsNoTracking().SingleAsync()));
+        Assert.Equal(history, JsonSerializer.Serialize(await context.JobAttempts.AsNoTracking().OrderBy(attempt => attempt.AttemptNumber).ToArrayAsync()));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Concurrent_failures_consume_one_retry(bool conflicting)
+    {
+        JobExecutionAssignment assignment = await AssignAsync();
+        PairReadsInterceptor barrier = new();
+        await using TaskForgeDbContext first = new(With(barrier));
+        await using TaskForgeDbContext second = new(With(barrier));
+
+        ExecutionResult[] results = await Task.WhenAll(
+            Store(first).TransitionAsync(Identity(assignment), new ExecutionReport.Fail("Failure", "Failed.")),
+            Store(second).TransitionAsync(Identity(assignment), new ExecutionReport.Fail(" FAILURE ", conflicting ? "Different." : " Failed. ")));
+
+        Assert.Single(results, result => result == ExecutionResult.Accepted);
+        Assert.Single(results, result => result == (conflicting ? ExecutionResult.Conflicting : ExecutionResult.Duplicate));
+        await using TaskForgeDbContext read = new(ExecutionOptions);
+        Job job = await read.Jobs.SingleAsync();
+        JobAttempt attempt = await read.JobAttempts.SingleAsync();
+        Assert.Equal(1, job.RetryCount);
+        Assert.Equal(assignment.Job.Version + 1, job.Version);
+        Assert.Equal(JobAttemptOutcome.Failed, attempt.Outcome);
+        Assert.Equal(job.UpdatedAtUtc, attempt.FinishedAtUtc);
+        Assert.Equal(results[0] == ExecutionResult.Accepted ? "Failed." : conflicting ? "Different." : "Failed.", attempt.ErrorMessage);
     }
 
     [Theory]
@@ -358,7 +487,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         }, rejectVersionInSql ? assignment.Job.Version : null);
         await using TaskForgeDbContext context = new(With(conflict));
 
-        Assert.Equal(ExecutionResult.Cancelled, await Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("ignored")));
+        Assert.Equal(ExecutionResult.Cancelled, await Store(context).TransitionAsync(Identity(assignment), new ExecutionReport.Complete("\"ignored\"")));
 
         Assert.Equal(2, conflict.ReadCount);
         await using TaskForgeDbContext read = new(ExecutionOptions);
@@ -442,6 +571,22 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
     private static bool IsJobRead(DbCommand command) => command.CommandText.Contains("FROM [Jobs] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal);
 
     private static bool IsGuardedWrite(DbCommand command) => command.CommandText.Contains("DECLARE @transitionUtc", StringComparison.Ordinal);
+
+    private sealed class AdvancingSqlClockInterceptor(DateTimeOffset start) : DbCommandInterceptor
+    {
+        public int ClockReads { get; private set; }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("SYSUTCDATETIME()", StringComparison.Ordinal))
+            {
+                command.CommandText = command.CommandText.Replace("SYSUTCDATETIME()", "@testSqlUtc", StringComparison.Ordinal);
+                command.Parameters.Add(new SqlParameter("@testSqlUtc", SqlDbType.DateTime2) { Value = start.AddSeconds(++ClockReads).UtcDateTime, Scale = 7 });
+            }
+
+            return ValueTask.FromResult(result);
+        }
+    }
 
     private sealed class FixedSqlClockInterceptor(DateTimeOffset now) : DbCommandInterceptor
     {
