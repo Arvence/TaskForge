@@ -186,7 +186,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
             EfCoreJobStore store = new(context);
             DateTimeOffset now = DateTimeOffset.UtcNow;
             Assert.Equal(1, await store.RecoverExpiredLeasesAsync(now));
-            JobExecutionAssignment? current = await store.TryDistributeAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), now);
+            JobExecutionAssignment? current = await store.TryDistributeAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), now.AddSeconds(5));
             Assert.NotNull(current);
             Assert.NotEqual(old.AttemptId, current.AttemptId);
         }

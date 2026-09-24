@@ -415,7 +415,8 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
         EfCoreJobStore readStore = new(readContext);
         Job recovered = (await readStore.FindAsync(expired.Id))!;
-        Assert.Equal(JobStatus.Queued, recovered.Status);
+        Assert.Equal(JobStatus.Retrying, recovered.Status);
+        Assert.Equal(1, recovered.RetryCount);
         Assert.Null(recovered.OwningWorkerId);
         Assert.Null(recovered.LeaseExpiresAtUtc);
         Assert.Equal(expired.Version + 1, recovered.Version);
@@ -428,7 +429,8 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         Assert.Equal(active.Version, persistedActive.Version);
         Assert.Equal("active-worker", persistedActive.OwningWorkerId);
         Assert.Equal(active.LeaseExpiresAtUtc, persistedActive.LeaseExpiresAtUtc);
-        Job? reacquired = await readStore.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(30), now);
+        Assert.Null(await readStore.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(30), now));
+        Job? reacquired = await readStore.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(30), now.AddSeconds(5));
         Assert.NotNull(reacquired);
         Assert.Equal(expired.Id, reacquired.Id);
         Assert.Equal("replacement-worker", reacquired.OwningWorkerId);

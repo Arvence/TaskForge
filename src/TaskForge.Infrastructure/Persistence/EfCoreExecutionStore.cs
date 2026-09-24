@@ -246,6 +246,9 @@ public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryP
             case JobAttemptOutcome.PermanentlyFailed:
                 job.DeadLetter(error, now);
                 break;
+            case JobAttemptOutcome.TimedOut:
+                job.TimeOut(now.Add(retryDelay), now);
+                break;
             default:
                 job.Fail(error, now.Add(retryDelay), now);
                 break;

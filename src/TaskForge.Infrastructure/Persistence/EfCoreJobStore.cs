@@ -1,17 +1,25 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Abstractions.Persistence;
+using TaskForge.Application.Jobs;
 using TaskForge.Application.Jobs.Models;
+using TaskForge.Application.Workers;
 using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Infrastructure.Persistence;
 
-public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
+public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy? retryPolicy = null, ILogger<EfCoreJobStore>? logger = null)
     : IJobRepository, IJobQueue, IJobAttemptReader
 {
     private const int MaximumDistributionAttempts = 5;
+    private const int MaximumRecoveryAttempts = 5;
+    private readonly JobRetryPolicy _retryPolicy = retryPolicy ?? new(Options.Create(new WorkerOptions()));
+    private readonly ILogger<EfCoreJobStore> _logger = logger ?? NullLogger<EfCoreJobStore>.Instance;
 
     public async Task<JobExecutionAssignment?> TryDistributeAsync(string applicationId, string workerId, IReadOnlyCollection<string> supportedTypes, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken = default)
     {
@@ -276,35 +284,128 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext)
 
     public async Task<int> RecoverExpiredLeasesAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
     {
-        List<Job> expiredJobs = await dbContext.Jobs
+        List<Guid> expiredJobIds = await dbContext.Jobs
             .AsNoTracking()
             .Where(job =>
                 job.Status == JobStatus.Processing
-                && job.LeaseExpiresAtUtc != null
-                && job.LeaseExpiresAtUtc <= now)
+                && (job.LeaseExpiresAtUtc == null || job.LeaseExpiresAtUtc <= now))
+            .Select(job => job.Id)
             .ToListAsync(cancellationToken);
 
         int recoveredCount = 0;
-        foreach (Job job in expiredJobs)
+        foreach (Guid jobId in expiredJobIds)
         {
-            long expectedVersion = job.Version;
-            List<JobAttempt> attempts = await dbContext.JobAttempts
-                .Where(attempt => attempt.JobId == job.Id && attempt.Outcome == JobAttemptOutcome.Running)
-                .ToListAsync(cancellationToken);
-            foreach (JobAttempt attempt in attempts)
-            {
-                attempt.Finish(JobAttemptOutcome.Abandoned, now, "LeaseExpired", "The worker lease expired before the attempt finished.");
-            }
-
-            job.RecoverExpiredLease(now);
-
-            if (await TryUpdateAsync(job, expectedVersion, cancellationToken))
+            if (await dbContext.Database.CreateExecutionStrategy().ExecuteAsync(() => RecoverExpiredLeaseAsync(jobId, now, cancellationToken)))
             {
                 recoveredCount++;
             }
         }
 
         return recoveredCount;
+    }
+
+    private async Task<bool> RecoverExpiredLeaseAsync(Guid jobId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        for (int retry = 0; retry < MaximumRecoveryAttempts; retry++)
+        {
+            dbContext.ChangeTracker.Clear();
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                Job? job = await dbContext.Jobs.FromSql($"""
+                    SELECT * FROM [Jobs] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {jobId}
+                    """).SingleOrDefaultAsync(cancellationToken);
+                if (job is null || job.Status != JobStatus.Processing || job.LeaseExpiresAtUtc > now)
+                {
+                    return false;
+                }
+
+                List<JobAttempt> attempts = await dbContext.JobAttempts.FromSql($"""
+                    SELECT * FROM [JobAttempts] WITH (UPDLOCK, HOLDLOCK) WHERE [JobId] = {jobId}
+                    """).OrderBy(attempt => attempt.AttemptNumber).ToListAsync(cancellationToken);
+                if (!CanRecoverOwnership(job, attempts, now))
+                {
+                    _logger.LogWarning("Skipped lease recovery for job {JobId}: inconsistent ownership or attempt history. Worker {WorkerId}, start {StartedAtUtc}, lease {LeaseExpiresAtUtc}.", job.Id, job.OwningWorkerId, job.StartedAtUtc, job.LeaseExpiresAtUtc);
+                    return false;
+                }
+
+                JobAttempt? current = attempts.LastOrDefault();
+                bool missingAttempt = current is null || current.StartedAtUtc < job.StartedAtUtc;
+                if (missingAttempt)
+                {
+                    current = JobAttempt.CreateLeaseRecovery(job, checked((current?.AttemptNumber ?? 0) + 1), now);
+                    dbContext.JobAttempts.Add(current);
+                }
+                else if (current!.Outcome == JobAttemptOutcome.Running)
+                {
+                    current.Finish(job.CancellationRequested ? JobAttemptOutcome.Cancelled : JobAttemptOutcome.TimedOut, now,
+                        job.CancellationRequested ? "CancellationRequested" : "Timeout",
+                        job.CancellationRequested ? "Job cancellation was requested." : $"Job timed out after {job.TimeoutSeconds} second(s).");
+                }
+
+                job.RecoverExpiredLease(now.Add(_retryPolicy.GetDelay(job.RetryCount)), now);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                dbContext.ChangeTracker.Clear();
+                return true;
+            }
+            catch (Exception exception) when (IsDistributionConflict(exception))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                dbContext.ChangeTracker.Clear();
+            }
+            catch
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                dbContext.ChangeTracker.Clear();
+                throw;
+            }
+        }
+
+        _logger.LogWarning("Skipped lease recovery for job {JobId} after repeated concurrent changes.", jobId);
+        return false;
+    }
+
+    private static bool CanRecoverOwnership(Job job, IReadOnlyList<JobAttempt> attempts, DateTimeOffset now)
+    {
+        if (string.IsNullOrWhiteSpace(job.OwningWorkerId) || job.StartedAtUtc is null
+            || job.LeaseExpiresAtUtc is null || job.TimeoutSeconds <= 0
+            || job.LeaseExpiresAtUtc < job.StartedAtUtc.Value.AddSeconds(job.TimeoutSeconds))
+        {
+            return false;
+        }
+
+        JobAttempt? current = attempts.LastOrDefault();
+        foreach (JobAttempt attempt in attempts)
+        {
+            bool running = attempt.Outcome == JobAttemptOutcome.Running;
+            bool validFinish = running
+                ? attempt.FinishedAtUtc is null
+                : attempt.FinishedAtUtc >= attempt.StartedAtUtc && attempt.FinishedAtUtc <= now;
+            if (!validFinish || (running && !job.CancellationRequested && attempt.StartedAtUtc.AddSeconds(job.TimeoutSeconds) > now))
+            {
+                return false;
+            }
+
+            if (attempt.StartedAtUtc < job.StartedAtUtc)
+            {
+                if (attempt.Outcome == JobAttemptOutcome.Running || attempt.FinishedAtUtc is null || attempt.FinishedAtUtc > job.StartedAtUtc)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                bool recoverableOutcome = attempt.Outcome is JobAttemptOutcome.Running or JobAttemptOutcome.Abandoned or JobAttemptOutcome.TimedOut
+                    || (attempt.Outcome == JobAttemptOutcome.Cancelled && job.CancellationRequested);
+                if (attempt != current || attempt.WorkerId != job.OwningWorkerId || attempt.StartedAtUtc >= job.LeaseExpiresAtUtc || !recoverableOutcome)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     public Task<bool> IsCancellationRequestedAsync(Guid jobId, CancellationToken cancellationToken = default) =>

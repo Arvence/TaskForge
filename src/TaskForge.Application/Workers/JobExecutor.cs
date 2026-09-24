@@ -16,12 +16,6 @@ public sealed class JobExecutor(IJobQueue jobQueue, IEnumerable<IJobHandler> han
     public async Task<bool> ProcessNextAsync(string workerId, Action<Guid?> currentJobChanged, CancellationToken acquisitionToken, CancellationToken executionStoppingToken)
     {
         DateTimeOffset now = timeProvider.GetUtcNow();
-        int recoveredJobs = await jobQueue.RecoverExpiredLeasesAsync(now, acquisitionToken);
-        if (recoveredJobs > 0)
-        {
-            logger.LogWarning("Recovered {RecoveredJobCount} job(s) with expired worker leases.", recoveredJobs);
-        }
-
         Job? job = await jobQueue.TryAcquireNextAsync(workerId, TimeSpan.FromSeconds(_options.LeaseGraceSeconds), now, acquisitionToken);
         if (job is null)
         {

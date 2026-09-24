@@ -237,7 +237,10 @@ public sealed class Job
         Touch(now);
     }
 
-    public void RecoverExpiredLease(DateTimeOffset now)
+    public void TimeOut(DateTimeOffset nextRetryAtUtc, DateTimeOffset now) =>
+        Fail($"Timeout: Job timed out after {TimeoutSeconds} second(s).", nextRetryAtUtc, now);
+
+    public void RecoverExpiredLease(DateTimeOffset nextRetryAtUtc, DateTimeOffset now)
     {
         EnsureProcessing();
 
@@ -249,18 +252,12 @@ public sealed class Job
 
         if (CancellationRequested)
         {
-            Status = JobStatus.Cancelled;
-            NextRetryAtUtc = null;
+            Cancel(now);
         }
         else
         {
-            Status = JobStatus.Queued;
-            QueuedAtUtc = now;
-            LastError = "The previous worker lease expired; the job was requeued.";
+            TimeOut(nextRetryAtUtc, now);
         }
-
-        ClearOwnership();
-        Touch(now);
     }
 
     private void EnsureProcessing()

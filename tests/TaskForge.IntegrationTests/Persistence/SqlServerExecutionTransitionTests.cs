@@ -131,7 +131,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         {
             DateTimeOffset recoveredAt = await SqlNowAsync(context);
             Assert.Equal(1, await new EfCoreJobStore(context).RecoverExpiredLeasesAsync(recoveredAt));
-            current = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), recoveredAt))!;
+            current = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), recoveredAt.AddSeconds(5)))!;
         }
 
         Assert.Equal(ExecutionResult.Stale, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Complete("\"old report\"")));
@@ -140,8 +140,8 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         await AssertRunningAsync(current);
         await using TaskForgeDbContext read = new(ExecutionOptions);
         JobAttempt abandoned = await read.JobAttempts.SingleAsync(attempt => attempt.Id == old.AttemptId);
-        Assert.Equal(JobAttemptOutcome.Abandoned, abandoned.Outcome);
-        Assert.Equal("LeaseExpired", abandoned.ErrorCode);
+        Assert.Equal(JobAttemptOutcome.TimedOut, abandoned.Outcome);
+        Assert.Equal("Timeout", abandoned.ErrorCode);
     }
 
     [Theory]

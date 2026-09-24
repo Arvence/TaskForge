@@ -33,9 +33,10 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
         await using (TaskForgeDbContext context = new(DatabaseOptions))
         {
             EfCoreJobStore store = new(context);
-            Job acquired = (await store.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(5), recoveredAt))!;
-            Assert.Equal(0, acquired.RetryCount);
-            JobAttempt second = (await store.TryStartAttemptAsync(acquired, recoveredAt))!;
+            Assert.Null(await store.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(5), recoveredAt));
+            Job acquired = (await store.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(5), recoveredAt.AddSeconds(5)))!;
+            Assert.Equal(1, acquired.RetryCount);
+            JobAttempt second = (await store.TryStartAttemptAsync(acquired, recoveredAt.AddSeconds(5)))!;
             Assert.Equal(2, second.AttemptNumber);
         }
 
@@ -48,8 +49,8 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
         IReadOnlyList<JobAttempt> attempts = (await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!;
         Assert.Equal([1, 2], attempts.Select(attempt => attempt.AttemptNumber));
-        Assert.Equal(JobAttemptOutcome.Abandoned, attempts[0].Outcome);
-        Assert.Equal("LeaseExpired", attempts[0].ErrorCode);
+        Assert.Equal(JobAttemptOutcome.TimedOut, attempts[0].Outcome);
+        Assert.Equal("Timeout", attempts[0].ErrorCode);
         Assert.Equal(recoveredAt, attempts[0].FinishedAtUtc);
         Assert.Equal(60_000, attempts[0].DurationMilliseconds);
         Assert.Equal(JobAttemptOutcome.Running, attempts[1].Outcome);
@@ -72,8 +73,8 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
         Assert.Null(await workerStore.TryStartAttemptAsync(acquired, Now.AddMinutes(1)));
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
-        Assert.Empty((await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!);
-        Assert.Equal(JobStatus.Queued, (await readContext.Jobs.SingleAsync()).Status);
+        Assert.Equal("LegacyLeaseRecovery", Assert.Single((await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!).ErrorCode);
+        Assert.Equal(JobStatus.Retrying, (await readContext.Jobs.SingleAsync()).Status);
     }
 
     [Fact]
@@ -140,11 +141,8 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
             await new EfCoreJobStore(context).TryAcquireNextAsync("worker-01", TimeSpan.FromSeconds(5), Now);
         }
 
-        DbContextOptions<TaskForgeDbContext> options = new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions)
-            .AddInterceptors(new ConcurrentSaveInterceptor())
-            .Options;
-        await using TaskForgeDbContext workerContext = new(options);
-        await using TaskForgeDbContext recoveryContext = new(options);
+        await using TaskForgeDbContext workerContext = new(DatabaseOptions);
+        await using TaskForgeDbContext recoveryContext = new(DatabaseOptions);
         EfCoreJobStore workerStore = new(workerContext);
         Job job = (await workerStore.FindAsync(jobId))!;
 
@@ -154,18 +152,12 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
         Job persisted = await readContext.Jobs.SingleAsync();
-        if (await start is null)
-        {
-            Assert.Equal(1, await recovery);
-            Assert.Equal(JobStatus.Queued, persisted.Status);
-            Assert.Empty(await readContext.JobAttempts.ToListAsync());
-        }
-        else
-        {
-            Assert.Equal(0, await recovery);
-            Assert.Equal(JobStatus.Processing, persisted.Status);
-            Assert.Equal(JobAttemptOutcome.Running, (await readContext.JobAttempts.SingleAsync()).Outcome);
-        }
+        Assert.Equal(1, await recovery);
+        Assert.Equal(JobStatus.Retrying, persisted.Status);
+        Assert.Equal(1, persisted.RetryCount);
+        JobAttempt attempt = await readContext.JobAttempts.SingleAsync();
+        Assert.Equal(await start is null ? "LegacyLeaseRecovery" : "Timeout", attempt.ErrorCode);
+        Assert.NotEqual(JobAttemptOutcome.Running, attempt.Outcome);
     }
 
     private async Task<Guid> AddQueuedJobAsync()

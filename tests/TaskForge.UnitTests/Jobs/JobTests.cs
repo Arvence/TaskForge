@@ -166,7 +166,7 @@ public sealed class JobTests
     }
 
     [Fact]
-    public void Job_with_expired_lease_is_requeued()
+    public void Job_with_expired_lease_consumes_retry_budget()
     {
         Job job = CreateJob();
         DateTimeOffset startedAt = CreatedAt.AddSeconds(2);
@@ -174,13 +174,14 @@ public sealed class JobTests
         job.Queue(CreatedAt.AddSeconds(1));
         job.StartProcessing("worker-01", leaseExpiresAt, startedAt);
 
-        job.RecoverExpiredLease(leaseExpiresAt);
+        job.RecoverExpiredLease(leaseExpiresAt.AddSeconds(5), leaseExpiresAt);
 
-        Assert.Equal(JobStatus.Queued, job.Status);
-        Assert.Equal(leaseExpiresAt, job.QueuedAtUtc);
+        Assert.Equal(JobStatus.Retrying, job.Status);
+        Assert.Equal(1, job.RetryCount);
+        Assert.Equal(leaseExpiresAt.AddSeconds(5), job.NextRetryAtUtc);
         Assert.Null(job.OwningWorkerId);
         Assert.Null(job.LeaseExpiresAtUtc);
-        Assert.Contains("lease expired", job.LastError);
+        Assert.Contains("Timeout", job.LastError);
     }
 
     [Fact]
@@ -193,7 +194,30 @@ public sealed class JobTests
         job.StartProcessing("worker-01", leaseExpiresAt, startedAt);
 
         Assert.Throws<InvalidOperationException>(
-            () => job.RecoverExpiredLease(leaseExpiresAt.AddTicks(-1)));
+            () => job.RecoverExpiredLease(leaseExpiresAt.AddSeconds(5), leaseExpiresAt.AddTicks(-1)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Recovery_honors_cancellation_and_zero_retry_budget_once(bool cancelled)
+    {
+        Job job = CreateJob(maxRetries: 0);
+        job.Queue(CreatedAt);
+        job.StartProcessing("lost-worker", CreatedAt.AddMinutes(1), CreatedAt);
+        if (cancelled)
+        {
+            job.RequestCancellation(CreatedAt.AddSeconds(1));
+        }
+
+        job.RecoverExpiredLease(CreatedAt.AddMinutes(2), CreatedAt.AddMinutes(1));
+
+        Assert.Equal(cancelled ? JobStatus.Cancelled : JobStatus.DeadLettered, job.Status);
+        Assert.Equal(cancelled ? 0 : 1, job.RetryCount);
+        Assert.Null(job.NextRetryAtUtc);
+        Assert.Null(job.OwningWorkerId);
+        Assert.Throws<InvalidOperationException>(() => job.RecoverExpiredLease(CreatedAt.AddMinutes(3), CreatedAt.AddMinutes(2)));
+        Assert.Equal(cancelled ? 0 : 1, job.RetryCount);
     }
 
     private static Job CreateJob(int maxRetries = 3) => new(

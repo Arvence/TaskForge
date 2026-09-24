@@ -147,14 +147,15 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
             Assert.Equal(1, await new EfCoreJobStore(recoveryContext).RecoverExpiredLeasesAsync(expiredAt));
         }
 
-        JobExecutionAssignment third = (await DistributeAsync(context, "replacement-worker", expiredAt))!;
+        Assert.Null(await DistributeAsync(context, "replacement-worker", expiredAt));
+        JobExecutionAssignment third = (await DistributeAsync(context, "replacement-worker", expiredAt.AddSeconds(10)))!;
 
         Assert.Equal(3, third.Attempt.AttemptNumber);
-        Assert.Equal(1, third.Job.RetryCount);
+        Assert.Equal(2, third.Job.RetryCount);
         await using TaskForgeDbContext readContext = new(DistributionOptions);
         List<JobAttempt> attempts = await readContext.JobAttempts.OrderBy(attempt => attempt.AttemptNumber).ToListAsync();
         Assert.Equal([1, 2, 3], attempts.Select(attempt => attempt.AttemptNumber));
-        Assert.Equal([JobAttemptOutcome.Failed, JobAttemptOutcome.Abandoned, JobAttemptOutcome.Running], attempts.Select(attempt => attempt.Outcome));
+        Assert.Equal([JobAttemptOutcome.Failed, JobAttemptOutcome.TimedOut, JobAttemptOutcome.Running], attempts.Select(attempt => attempt.Outcome));
         Assert.Equal(third.AttemptId, attempts[2].Id);
         Assert.Equal(expiredAt, attempts[1].FinishedAtUtc);
     }

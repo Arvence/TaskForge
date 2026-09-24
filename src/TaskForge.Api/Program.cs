@@ -81,6 +81,7 @@ builder.Services.AddScoped<IJobHandler>(
 builder.Services.AddScoped<IJobHandler, GenerateReportJobHandler>();
 builder.Services.AddSingleton<JobRetryPolicy>();
 builder.Services.AddScoped<JobExecutor>();
+builder.Services.AddHostedService<JobMaintenanceService>();
 builder.Services.AddSingleton<WorkerManager>();
 builder.Services.AddHostedService(
     serviceProvider => serviceProvider.GetRequiredService<WorkerManager>());
