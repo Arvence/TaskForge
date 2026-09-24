@@ -12,6 +12,109 @@ public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryP
 {
     private const int MaximumTransitionAttempts = 5;
 
+    public Task<JobCancellationResult> CancelAsync(Guid jobId, CancellationToken cancellationToken = default) =>
+        dbContext.Database.CreateExecutionStrategy().ExecuteAsync(() => CancelCoreAsync(jobId, cancellationToken));
+
+    private async Task<JobCancellationResult> CancelCoreAsync(Guid jobId, CancellationToken cancellationToken)
+    {
+        for (int retry = 0; retry < MaximumTransitionAttempts; retry++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            dbContext.ChangeTracker.Clear();
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                Job? job = await dbContext.Jobs.FromSql($"""
+                    SELECT * FROM [Jobs] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [Id] = {jobId}
+                    """).SingleOrDefaultAsync(cancellationToken);
+                if (job is null)
+                {
+                    return new(JobCancellationStatus.NotFound, null);
+                }
+
+                if (job.Status == JobStatus.Cancelled)
+                {
+                    return new(JobCancellationStatus.Accepted, job);
+                }
+
+                if (job.Status is JobStatus.Completed or JobStatus.DeadLettered)
+                {
+                    return new(JobCancellationStatus.AlreadyFinished, job);
+                }
+
+                JobAttempt? attempt = null;
+                if (job.Status == JobStatus.Processing)
+                {
+                    attempt = await dbContext.JobAttempts.FromSql($"""
+                        SELECT * FROM [JobAttempts] WITH (UPDLOCK, HOLDLOCK)
+                        WHERE [JobId] = {jobId}
+                        """).OrderByDescending(candidate => candidate.AttemptNumber).FirstOrDefaultAsync(cancellationToken);
+                    if (job.StartedAtUtc is null || job.OwningWorkerId is null || job.LeaseExpiresAtUtc is null)
+                    {
+                        return new(JobCancellationStatus.ConcurrentUpdate, null);
+                    }
+
+                    if (attempt is not null && attempt.StartedAtUtc < job.StartedAtUtc
+                        && attempt.Outcome != JobAttemptOutcome.Running && attempt.FinishedAtUtc <= job.StartedAtUtc)
+                    {
+                        attempt = null;
+                    }
+
+                    if (attempt is not null && (attempt.WorkerId != job.OwningWorkerId || attempt.StartedAtUtc < job.StartedAtUtc
+                        || attempt.StartedAtUtc >= job.LeaseExpiresAtUtc))
+                    {
+                        return new(JobCancellationStatus.ConcurrentUpdate, null);
+                    }
+                }
+
+                DateTimeOffset now = await GetSqlUtcNowAsync(cancellationToken);
+                if (job.Status == JobStatus.Processing && !job.CancellationRequested
+                    && now >= (attempt?.StartedAtUtc ?? job.StartedAtUtc!.Value).AddSeconds(job.TimeoutSeconds))
+                {
+                    job.TimeOut(now.Add(retryPolicy.GetDelay(job.RetryCount)), now);
+                    if (attempt?.Outcome == JobAttemptOutcome.Running)
+                    {
+                        attempt.Finish(JobAttemptOutcome.TimedOut, now, "Timeout", $"Job timed out after {job.TimeoutSeconds} second(s).");
+                    }
+                }
+
+                JobCancellationStatus status = JobCancellationStatus.AlreadyFinished;
+                if (job.Status != JobStatus.DeadLettered)
+                {
+                    job.RequestCancellation(now);
+                    if (job.Status == JobStatus.Processing)
+                    {
+                        job.Cancel(now);
+                        if (attempt?.Outcome == JobAttemptOutcome.Running)
+                        {
+                            attempt.Finish(JobAttemptOutcome.Cancelled, now, "CancellationRequested", "Job cancellation was requested.");
+                        }
+                    }
+
+                    status = JobCancellationStatus.Accepted;
+                }
+
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return new(status, job);
+            }
+            catch (Exception exception) when (IsTransitionConflict(exception))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                dbContext.ChangeTracker.Clear();
+            }
+            catch
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                dbContext.ChangeTracker.Clear();
+                throw;
+            }
+        }
+
+        return new(JobCancellationStatus.ConcurrentUpdate, null);
+    }
+
     public async Task<ExecutionLookup> FindExecutionAsync(ExecutionIdentity identity, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(identity);

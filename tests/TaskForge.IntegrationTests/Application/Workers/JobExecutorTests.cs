@@ -244,7 +244,8 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
         JobExecutor executor = CreateExecutor(
             workerStore,
             [handler],
-            cancellationRegistry);
+            cancellationRegistry,
+            timeProvider: TimeProvider.System);
         Task<bool> execution = executor.ProcessNextAsync(
             "worker-01",
             _ => { },
@@ -259,9 +260,7 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
 
         await using TaskForgeDbContext apiContext = new(databaseOptions);
         JobCancellationService cancellationService = new(
-            new EfCoreJobStore(apiContext),
-            cancellationRegistry,
-            new FixedTimeProvider(Now.AddSeconds(1)));
+            new EfCoreExecutionStore(apiContext, new JobRetryPolicy(Options.Create(new WorkerOptions()))), cancellationRegistry);
         JobCancellationResult cancellation = await cancellationService.RequestAsync(
             job.Id);
 
@@ -287,14 +286,14 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
             .Options;
         JobCancellationRegistry cancellationRegistry = new();
         await using TaskForgeDbContext workerContext = new(workerOptions);
-        JobExecutor executor = CreateExecutor(new EfCoreJobStore(workerContext), [new SuccessfulJobHandler()], cancellationRegistry);
+        JobExecutor executor = CreateExecutor(new EfCoreJobStore(workerContext), [new SuccessfulJobHandler()], cancellationRegistry, timeProvider: TimeProvider.System);
         Task<bool> execution = executor.ProcessNextAsync("worker-01", _ => { }, CancellationToken.None, CancellationToken.None);
 
         try
         {
             await completion.Ready.WaitAsync(TimeSpan.FromSeconds(30));
             await using TaskForgeDbContext apiContext = new(DatabaseOptions);
-            JobCancellationService cancellationService = new(new EfCoreJobStore(apiContext), cancellationRegistry, new FixedTimeProvider(Now));
+            JobCancellationService cancellationService = new(new EfCoreExecutionStore(apiContext, new JobRetryPolicy(Options.Create(new WorkerOptions()))), cancellationRegistry);
             JobCancellationResult result = await cancellationService.RequestAsync(job.Id);
             Assert.Equal(JobCancellationStatus.Accepted, result.Status);
         }

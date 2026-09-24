@@ -109,6 +109,9 @@ public sealed class JobExecutionServiceTests
 
     private sealed class RejectAccessStore : IExecutionStore
     {
+        public Task<JobCancellationResult> CancelAsync(Guid jobId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Validation must precede persistence.");
+
         public Task<ExecutionLookup> FindExecutionAsync(ExecutionIdentity identity, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Validation must precede persistence.");
 
