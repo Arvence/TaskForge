@@ -40,6 +40,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<SubmitJobValidator>();
 builder.Services.AddScoped<JobManager>();
 builder.Services.AddScoped<JobCancellationService>();
+builder.Services.AddSingleton<JobDistributionService>();
 builder.Services.AddSingleton<JobCancellationRegistry>();
 builder.Services
     .AddOptions<WorkerOptions>()
@@ -105,6 +106,7 @@ app.UseSwagger(options =>
     options.RouteTemplate = "openapi/{documentName}.json");
 
 app.MapGet("/", () => Results.Redirect("/api/health"));
+app.MapTaskForgeExecutionWaitEndpoint();
 
 app.MapGet("/api/health", () => Results.Ok(new
 {
