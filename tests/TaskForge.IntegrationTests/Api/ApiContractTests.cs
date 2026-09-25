@@ -12,7 +12,7 @@ using Microsoft.Extensions.Hosting;
 
 using TaskForge.Infrastructure.Persistence;
 using TaskForge.Domain.Jobs;
-using TaskForge.Application.Workers;
+using TaskForge.Api.Jobs;
 
 namespace TaskForge.IntegrationTests.Api;
 
@@ -20,7 +20,7 @@ namespace TaskForge.IntegrationTests.Api;
 public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(fixture)
 {
     [Fact]
-    public async Task Generate_report_runs_through_registered_handler_and_persists_result_and_attempt()
+    public async Task External_report_completion_persists_result_and_attempt()
     {
         await using WebApplicationFactory<Program> factory = CreateFactory();
         using HttpClient client = factory.CreateClient();
@@ -46,11 +46,14 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal("Queued", queued.GetProperty("status").GetString());
         Guid id = queued.GetProperty("id").GetGuid();
 
-        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
-        {
-            JobExecutor executor = scope.ServiceProvider.GetRequiredService<JobExecutor>();
-            Assert.True(await executor.ProcessNextAsync("report-worker", _ => { }, CancellationToken.None, CancellationToken.None));
-        }
+        using HttpResponseMessage acquired = await client.PostAsJsonAsync("/api/executions/wait",
+            new { applicationId = "test-app", workerId = "report-worker", supportedTypes = new[] { "generate-report" }, waitSeconds = 0 });
+        Assert.Equal(HttpStatusCode.OK, acquired.StatusCode);
+        ExecutionAssignmentResponse assignment = (await acquired.Content.ReadFromJsonAsync<ExecutionAssignmentResponse>())!;
+        Assert.Equal(id, assignment.JobId);
+        using HttpResponseMessage reported = await client.PostAsJsonAsync($"/api/jobs/{id}/attempts/{assignment.AttemptId}/complete",
+            new { applicationId = "test-app", workerId = "report-worker", result = new { title = "Expenses", entryCount = 3, totalAmount = 13m, categories = new[] { "Supplies", "Travel" } } });
+        Assert.Equal(HttpStatusCode.OK, reported.StatusCode);
 
         using HttpResponseMessage fetched = await client.GetAsync($"/api/jobs/{id}");
         Assert.Equal(HttpStatusCode.OK, fetched.StatusCode);
@@ -71,7 +74,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
     }
 
     [Fact]
-    public async Task Invalid_report_is_rejected_at_submission_without_persisting_job()
+    public async Task Business_payload_validation_is_left_to_external_clients()
     {
         await using WebApplicationFactory<Program> factory = CreateFactory();
         using HttpClient client = factory.CreateClient();
@@ -83,15 +86,14 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
             payload = new { title = "Expenses", entries = new[] { new { category = "Travel", amount = -1m } } }
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        JsonElement problem = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Contains("amount", problem.GetProperty("errors").GetProperty("Payload")[0].GetString());
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        Assert.Empty(await context.Jobs.ToListAsync());
+        Assert.Equal(JobStatus.Queued, (await context.Jobs.SingleAsync()).Status);
+        Assert.Empty(await context.JobAttempts.ToListAsync());
     }
 
     [Fact]
-    public async Task Invalid_persisted_report_is_dead_lettered_without_retry()
+    public async Task External_invalid_payload_report_is_dead_lettered_without_retry()
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         Job job = new(Guid.NewGuid(), "test-app", "generate-report", "{}", JobPriority.Normal, 3, 30, now);
@@ -103,12 +105,14 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         }
 
         await using WebApplicationFactory<Program> factory = CreateFactory();
-        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
-        {
-            JobExecutor executor = scope.ServiceProvider.GetRequiredService<JobExecutor>();
-            Assert.True(await executor.ProcessNextAsync("report-worker", _ => { }, CancellationToken.None, CancellationToken.None));
-            Assert.False(await executor.ProcessNextAsync("report-worker", _ => { }, CancellationToken.None, CancellationToken.None));
-        }
+        using HttpClient client = factory.CreateClient();
+        using HttpResponseMessage acquired = await client.PostAsJsonAsync("/api/executions/wait",
+            new { applicationId = "test-app", workerId = "report-worker", supportedTypes = new[] { "generate-report" }, waitSeconds = 0 });
+        Assert.Equal(HttpStatusCode.OK, acquired.StatusCode);
+        ExecutionAssignmentResponse assignment = (await acquired.Content.ReadFromJsonAsync<ExecutionAssignmentResponse>())!;
+        using HttpResponseMessage reported = await client.PostAsJsonAsync($"/api/jobs/{job.Id}/attempts/{assignment.AttemptId}/fail",
+            new { applicationId = "test-app", workerId = "report-worker", errorCode = "InvalidPayload", errorMessage = "The report payload is invalid." });
+        Assert.Equal(HttpStatusCode.OK, reported.StatusCode);
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
         Job persisted = await readContext.Jobs.SingleAsync(candidate => candidate.Id == job.Id);
@@ -117,7 +121,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Null(persisted.ResultJson);
         JobAttempt attempt = await readContext.JobAttempts.SingleAsync(candidate => candidate.JobId == job.Id);
         Assert.Equal(JobAttemptOutcome.PermanentlyFailed, attempt.Outcome);
-        Assert.Equal("NonRetryableJobException", attempt.ErrorCode);
+        Assert.Equal("invalidpayload", attempt.ErrorCode);
     }
 
     [Fact]
@@ -438,8 +442,6 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
-        builder.UseSetting("Worker:Count", "0");
-        builder.UseSetting("HttpRequestJobs:AllowedHosts:0", "localhost");
     });
 
     private static object ValidJob(string priority = "High", string applicationId = "test-app") => new

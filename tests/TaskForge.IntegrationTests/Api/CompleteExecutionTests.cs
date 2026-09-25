@@ -201,19 +201,23 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
     }
 
     [Fact]
-    public async Task Normal_startup_does_not_register_execution_reporting()
+    public async Task Normal_startup_registers_execution_reporting()
     {
         await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
-            builder.UseSetting("Worker:Count", "0");
         });
         using HttpClient client = factory.CreateClient();
         using HttpResponseMessage response = await client.PostAsJsonAsync($"/api/jobs/{Guid.NewGuid()}/attempts/{Guid.NewGuid()}/complete", new { applicationId = "test-app", workerId = "worker-01" });
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         using HttpResponseMessage failure = await client.PostAsJsonAsync($"/api/jobs/{Guid.NewGuid()}/attempts/{Guid.NewGuid()}/fail", new { applicationId = "test-app", workerId = "worker-01", errorCode = "Failure", errorMessage = "Failed." });
         Assert.Equal(HttpStatusCode.NotFound, failure.StatusCode);
-        Assert.Null(factory.Services.GetService<JobExecutionService>());
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("combination was not found", await response.Content.ReadAsStringAsync());
+        Assert.Equal("application/problem+json", failure.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("combination was not found", await failure.Content.ReadAsStringAsync());
+        await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<JobExecutionService>());
     }
 
     private async Task<WebApplication> CreateAppAsync()

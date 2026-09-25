@@ -3,9 +3,7 @@ namespace TaskForge.Application.Workers;
 public sealed class WorkerOptions
 {
     public const string SectionName = "Worker";
-    public const int MaximumWorkerCount = 8;
 
-    public int Count { get; init; } = 1;
     public int PollIntervalMilliseconds { get; init; } = 500;
     public int RetryDelaySeconds { get; init; } = 5;
     public int MaxRetryDelaySeconds { get; init; } = 300;

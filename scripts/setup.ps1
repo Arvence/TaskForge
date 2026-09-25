@@ -132,7 +132,7 @@ try {
     $configJson = $config = $configuredPassword = $null
     Write-Host '[OK] Compose configuration validated.'
     Write-Host "API: $baseUrl"
-    Write-Host 'Workers: default 1; existing database settings are preserved. Change the count through /api/workers/count.'
+    Write-Host 'TaskForge orchestrates jobs. External execution clients must acquire work through /api/executions/wait.'
 
     do {
         $answer = (Read-Host 'Start TaskForge now? [Y/n]').Trim()

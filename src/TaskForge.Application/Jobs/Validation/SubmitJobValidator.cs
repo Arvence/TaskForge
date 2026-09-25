@@ -1,18 +1,12 @@
 using System.Text.Json;
 
-using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Jobs.Models;
 using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Application.Jobs.Validation;
 
-public sealed class SubmitJobValidator(IEnumerable<IJobHandler> handlers)
+public sealed class SubmitJobValidator
 {
-    private readonly IReadOnlyDictionary<string, IJobHandler> _handlers =
-        handlers.ToDictionary(
-            handler => handler.JobType,
-            StringComparer.OrdinalIgnoreCase);
-
     public IReadOnlyDictionary<string, string[]> Validate(SubmitJobCommand command, string? idempotencyKey = null)
     {
         ArgumentNullException.ThrowIfNull(command);
@@ -24,7 +18,6 @@ public sealed class SubmitJobValidator(IEnumerable<IJobHandler> handlers)
             : "Application ID must contain 1 to 100 ASCII letters, digits, dots, underscores, or hyphens.");
         AddError(errors, "Type", ValidateType(command.Type));
         AddError(errors, "Payload", ValidateJsonPayload(command.PayloadJson));
-        ValidateHandlerPayload(errors, command.Type, command.PayloadJson);
         AddError(errors, "Priority", ValidatePriority(command.Priority));
         AddError(errors, "MaxRetries", ValidateMaxRetries(command.MaxRetries));
         AddError(errors, "TimeoutSeconds", ValidateTimeoutSeconds(command.TimeoutSeconds));
@@ -39,26 +32,6 @@ public sealed class SubmitJobValidator(IEnumerable<IJobHandler> handlers)
         {
             errors[field] = [error];
         }
-    }
-
-    private void ValidateHandlerPayload(
-        IDictionary<string, string[]> errors,
-        string type,
-        string payloadJson)
-    {
-        if (errors.ContainsKey("Type") || errors.ContainsKey("Payload"))
-        {
-            return;
-        }
-
-        string normalizedType = type.Trim();
-        if (!_handlers.TryGetValue(normalizedType, out IJobHandler? handler))
-        {
-            AddError(errors, "Type", $"Job type '{normalizedType}' is not supported.");
-            return;
-        }
-
-        AddError(errors, "Payload", handler.ValidatePayload(payloadJson));
     }
 
     private static string? ValidateType(string type)

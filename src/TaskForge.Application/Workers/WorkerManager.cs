@@ -10,13 +10,11 @@ using TaskForge.Domain.Workers;
 
 namespace TaskForge.Application.Workers;
 
-public sealed class WorkerManager(
-    IServiceScopeFactory serviceScopeFactory,
-    TimeProvider timeProvider,
-    IOptions<WorkerOptions> options,
-    ILogger<WorkerManager> logger)
+public sealed class WorkerManager(IServiceScopeFactory serviceScopeFactory, TimeProvider timeProvider, IOptions<WorkerOptions> options, ILogger<WorkerManager> logger)
     : BackgroundService
 {
+    private const int DefaultWorkerCount = 1;
+    private const int MaximumWorkerCount = 8;
     private readonly ConcurrentDictionary<string, WorkerRuntime> _workers = [];
     private readonly SemaphoreSlim _scaleLock = new(1, 1);
     private readonly WorkerOptions _options = options.Value;
@@ -34,7 +32,7 @@ public sealed class WorkerManager(
         return new WorkerManagerSnapshot(
             Volatile.Read(ref _desiredWorkerCount),
             workers.Count(worker => worker.Status != WorkerStatus.Stopping),
-            WorkerOptions.MaximumWorkerCount,
+            MaximumWorkerCount,
             workers);
     }
 
@@ -94,8 +92,6 @@ public sealed class WorkerManager(
     private async Task<int> LoadDesiredWorkerCountAsync(
         CancellationToken cancellationToken)
     {
-        EnsureValidWorkerCount(_options.Count);
-
         await using AsyncServiceScope scope =
             serviceScopeFactory.CreateAsyncScope();
         IWorkerSettingsStore settingsStore =
@@ -110,10 +106,10 @@ public sealed class WorkerManager(
         }
 
         await settingsStore.SetDesiredWorkerCountAsync(
-            _options.Count,
+            DefaultWorkerCount,
             timeProvider.GetUtcNow(),
             cancellationToken);
-        return _options.Count;
+        return DefaultWorkerCount;
     }
 
     private async Task ReconcileWorkersAsync(
@@ -256,12 +252,12 @@ public sealed class WorkerManager(
 
     private static void EnsureValidWorkerCount(int count)
     {
-        if (count is < 0 or > WorkerOptions.MaximumWorkerCount)
+        if (count is < 0 or > MaximumWorkerCount)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(count),
                 $"Worker count must be between 0 and "
-                + $"{WorkerOptions.MaximumWorkerCount}.");
+                + $"{MaximumWorkerCount}.");
         }
     }
 

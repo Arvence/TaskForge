@@ -6,8 +6,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 
 using TaskForge.Api.Jobs;
-using TaskForge.Api.Workers;
-using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Abstractions.Persistence;
 using TaskForge.Application.Common.Exceptions;
 using TaskForge.Application.Jobs;
@@ -15,7 +13,6 @@ using TaskForge.Application.Jobs.Models;
 using TaskForge.Application.Jobs.Validation;
 using TaskForge.Application.Workers;
 using TaskForge.Domain.Jobs;
-using TaskForge.Infrastructure.Jobs.Handlers;
 using TaskForge.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -41,13 +38,10 @@ builder.Services.AddScoped<SubmitJobValidator>();
 builder.Services.AddScoped<JobManager>();
 builder.Services.AddScoped<JobCancellationService>();
 builder.Services.AddSingleton<JobDistributionService>();
-builder.Services.AddSingleton<JobCancellationRegistry>();
+builder.Services.AddTaskForgeExecutionReporting();
 builder.Services
     .AddOptions<WorkerOptions>()
     .Bind(builder.Configuration.GetSection(WorkerOptions.SectionName))
-    .Validate(
-        options => options.Count is >= 0 and <= WorkerOptions.MaximumWorkerCount,
-        $"Worker count must be between 0 and {WorkerOptions.MaximumWorkerCount}.")
     .Validate(
         options => options.PollIntervalMilliseconds is >= 50 and <= 60_000,
         "Worker poll interval must be between 50 and 60000 milliseconds.")
@@ -62,30 +56,8 @@ builder.Services
         options => options.LeaseGraceSeconds is >= 1 and <= 3600,
         "Worker lease grace period must be between 1 and 3600 seconds.")
     .ValidateOnStart();
-builder.Services
-    .AddOptions<HttpRequestJobOptions>()
-    .Bind(builder.Configuration.GetSection(HttpRequestJobOptions.SectionName))
-    .Validate(
-        options => options.AllowedHosts is not null
-            && options.AllowedHosts.All(
-                host => !string.IsNullOrWhiteSpace(host)),
-        "HTTP request job allowed hosts cannot contain blank values.")
-    .ValidateOnStart();
-builder.Services.AddHttpClient<HttpRequestJobHandler>()
-    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-    {
-        AllowAutoRedirect = false
-    });
-builder.Services.AddScoped<IJobHandler>(
-    serviceProvider =>
-        serviceProvider.GetRequiredService<HttpRequestJobHandler>());
-builder.Services.AddScoped<IJobHandler, GenerateReportJobHandler>();
 builder.Services.AddSingleton<JobRetryPolicy>();
-builder.Services.AddScoped<JobExecutor>();
 builder.Services.AddHostedService<JobMaintenanceService>();
-builder.Services.AddSingleton<WorkerManager>();
-builder.Services.AddHostedService(
-    serviceProvider => serviceProvider.GetRequiredService<WorkerManager>());
 builder.Services.AddTaskForgeSqlServer(connectionString);
 
 var app = builder.Build();
@@ -107,6 +79,7 @@ app.UseSwagger(options =>
 
 app.MapGet("/", () => Results.Redirect("/api/health"));
 app.MapTaskForgeExecutionWaitEndpoint();
+app.MapTaskForgeExecutionEndpoints();
 
 app.MapGet("/api/health", () => Results.Ok(new
 {
@@ -315,40 +288,21 @@ app.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (
     .Produces(StatusCodes.Status404NotFound)
     .Produces(StatusCodes.Status409Conflict);
 
-app.MapGet("/api/workers", (WorkerManager workerManager) =>
-    Results.Ok(workerManager.GetSnapshot()))
+app.MapGet("/api/workers", () => Results.Problem(
+    statusCode: StatusCodes.Status410Gone,
+    detail: "Server worker management has been retired. External clients acquire work through POST /api/executions/wait."))
     .WithName("GetWorkers")
     .WithTags("Workers")
-    .WithSummary("Get active workers and the desired worker count.")
-    .Produces<WorkerManagerSnapshot>();
+    .WithSummary("Retired server worker management endpoint.")
+    .ProducesProblem(StatusCodes.Status410Gone);
 
-app.MapPut("/api/workers/count", async Task<IResult> (
-    SetWorkerCountRequest request,
-    WorkerManager workerManager,
-    CancellationToken cancellationToken) =>
-{
-    if (request.Count is < 0 or > WorkerOptions.MaximumWorkerCount)
-    {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["Count"] =
-            [
-                $"Worker count must be between 0 and "
-                + $"{WorkerOptions.MaximumWorkerCount}."
-            ]
-        });
-    }
-
-    WorkerManagerSnapshot snapshot = await workerManager.SetWorkerCountAsync(
-        request.Count,
-        cancellationToken);
-    return Results.Ok(snapshot);
-})
+app.MapPut("/api/workers/count", () => Results.Problem(
+    statusCode: StatusCodes.Status410Gone,
+    detail: "Server worker scaling has been retired. Configure execution capacity in external clients."))
     .WithName("SetWorkerCount")
     .WithTags("Workers")
-    .WithSummary("Scale in-process workers from zero to eight.")
-    .Produces<WorkerManagerSnapshot>()
-    .ProducesValidationProblem();
+    .WithSummary("Retired server worker scaling endpoint.")
+    .ProducesProblem(StatusCodes.Status410Gone);
 
 app.Run();
 

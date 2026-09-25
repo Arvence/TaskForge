@@ -423,7 +423,6 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
     private WebApplicationFactory<Program> CreateServer(DateTimeOffset now) => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
-        builder.UseSetting("Worker:Count", "0");
         builder.ConfigureServices(services => services.AddSingleton<TimeProvider>(new FixedTimeProvider(now)));
     });
 

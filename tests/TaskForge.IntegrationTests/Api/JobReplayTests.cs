@@ -5,11 +5,8 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 
-using TaskForge.Application.Abstractions.Execution;
-using TaskForge.Application.Workers;
+using TaskForge.Api.Jobs;
 using TaskForge.Domain.Jobs;
 using TaskForge.Infrastructure.Persistence;
 
@@ -40,13 +37,7 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
 
         string sourceSnapshot = JsonSerializer.Serialize(source);
         string attemptsSnapshot = JsonSerializer.Serialize(new[] { first, second });
-        SuccessfulHandler handler = new();
-        await using WebApplicationFactory<Program> factory = CreateFactory().WithWebHostBuilder(builder =>
-            builder.ConfigureServices(services =>
-            {
-                services.RemoveAll<IJobHandler>();
-                services.AddSingleton<IJobHandler>(handler);
-            }));
+        await using WebApplicationFactory<Program> factory = CreateFactory();
         using HttpClient client = factory.CreateClient();
         client.DefaultRequestHeaders.Add("Idempotency-Key", source.IdempotencyKey);
 
@@ -85,14 +76,16 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
             Assert.Empty(await context.JobAttempts.Where(attempt => attempt.JobId == replayId).ToListAsync());
         }
 
-        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
-        {
-            JobExecutor executor = scope.ServiceProvider.GetRequiredService<JobExecutor>();
-            Assert.True(await executor.ProcessNextAsync("replay-worker", _ => { }, CancellationToken.None, CancellationToken.None));
-            Assert.False(await executor.ProcessNextAsync("replay-worker", _ => { }, CancellationToken.None, CancellationToken.None));
-        }
+        using HttpResponseMessage acquired = await client.PostAsJsonAsync("/api/executions/wait",
+            new { applicationId = "test-app", workerId = "replay-worker", supportedTypes = new[] { source.Type }, waitSeconds = 0 });
+        Assert.Equal(HttpStatusCode.OK, acquired.StatusCode);
+        ExecutionAssignmentResponse assignment = (await acquired.Content.ReadFromJsonAsync<ExecutionAssignmentResponse>())!;
+        Assert.Equal(replayId, assignment.JobId);
+        Assert.Equal(source.PayloadJson, assignment.Payload.GetRawText());
+        using HttpResponseMessage completed = await client.PostAsJsonAsync($"/api/jobs/{replayId}/attempts/{assignment.AttemptId}/complete",
+            new { applicationId = "test-app", workerId = "replay-worker", result = new { replayed = true } });
+        Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
 
-        Assert.Equal(source.PayloadJson, Assert.Single(handler.Payloads));
         await using (TaskForgeDbContext context = new(DatabaseOptions))
         {
             Job replay = await context.Jobs.AsNoTracking().SingleAsync(job => job.Id == replayId);
@@ -158,7 +151,7 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
     }
 
     [Fact]
-    public async Task Replay_uses_current_submission_validation()
+    public async Task Replay_accepts_types_without_server_handlers()
     {
         Job source = new(Guid.NewGuid(), "test-app", "removed-handler", "{}", JobPriority.Normal, 1, 15, CreatedAt);
         source.RequestCancellation(CreatedAt);
@@ -171,17 +164,17 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
 
         using HttpResponseMessage response = await client.PostAsync($"/api/jobs/{source.Id}/retry", null);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
-        JsonElement problem = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("Job type 'removed-handler' is not supported.", problem.GetProperty("errors").GetProperty("Type")[0].GetString());
-        Assert.Equal(snapshot, JsonSerializer.Serialize(await context.Jobs.AsNoTracking().SingleAsync()));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        JsonElement replay = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("removed-handler", replay.GetProperty("type").GetString());
+        Assert.Equal("Queued", replay.GetProperty("status").GetString());
+        Assert.Equal(snapshot, JsonSerializer.Serialize(await context.Jobs.AsNoTracking().SingleAsync(job => job.Id == source.Id)));
+        Assert.Equal(2, await context.Jobs.CountAsync());
     }
 
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
-        builder.UseSetting("Worker:Count", "0");
     });
 
     private static Job CreateSource(JobStatus status)
@@ -198,7 +191,8 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
             return job;
         }
 
-        job.StartProcessing("original-worker", leaseExpiresAtUtc: CreatedAt.AddMinutes(1), now: CreatedAt.AddSeconds(1));
+        DateTimeOffset startedAt = status == JobStatus.Processing ? DateTimeOffset.UtcNow : CreatedAt.AddSeconds(1);
+        job.StartProcessing("original-worker", leaseExpiresAtUtc: startedAt.AddMinutes(1), now: startedAt);
         if (status == JobStatus.Processing)
         {
             return job;
@@ -229,19 +223,5 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
         }
 
         return job;
-    }
-
-    private sealed class SuccessfulHandler : IJobHandler
-    {
-        public string JobType => "http-request";
-        public List<string> Payloads { get; } = [];
-
-        public string? ValidatePayload(string payloadJson) => null;
-
-        public Task<string?> HandleAsync(string payloadJson, CancellationToken cancellationToken = default)
-        {
-            Payloads.Add(payloadJson);
-            return Task.FromResult<string?>("{\"replayed\":true}");
-        }
     }
 }

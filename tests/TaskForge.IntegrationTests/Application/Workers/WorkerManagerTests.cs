@@ -24,7 +24,6 @@ public sealed class WorkerManagerTests(SqlServerFixture fixture) : SqlServerTest
         services.AddSingleton<IOptions<WorkerOptions>>(
             Options.Create(new WorkerOptions
             {
-                Count = 1,
                 PollIntervalMilliseconds = 50,
                 RetryDelaySeconds = 1,
                 LeaseGraceSeconds = 5

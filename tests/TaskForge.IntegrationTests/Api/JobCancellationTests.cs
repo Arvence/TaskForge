@@ -139,7 +139,7 @@ public sealed class JobCancellationTests(SqlServerFixture fixture) : SqlServerTe
         Job job = await SeedAsync(JobStatus.Processing);
         await using TaskForgeDbContext context = new(DatabaseOptions);
         JobAttempt attempt = await context.JobAttempts.SingleAsync();
-        Assert.Equal(JobCancellationStatus.Accepted, (await new JobCancellationService(Store(context), new()).RequestAsync(job.Id)).Status);
+        Assert.Equal(JobCancellationStatus.Accepted, (await new JobCancellationService(Store(context)).RequestAsync(job.Id)).Status);
         string snapshot = await SnapshotAsync();
 
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
@@ -314,7 +314,6 @@ public sealed class JobCancellationTests(SqlServerFixture fixture) : SqlServerTe
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
-        builder.UseSetting("Worker:Count", "0");
     });
 
     private static EfCoreExecutionStore Store(TaskForgeDbContext context) => new(context, new JobRetryPolicy(Options.Create(new WorkerOptions())));

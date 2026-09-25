@@ -34,7 +34,6 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
-            builder.UseSetting("Worker:Count", "0");
         });
         using HttpClient client = factory.CreateClient();
 
