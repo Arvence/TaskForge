@@ -47,8 +47,15 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
             return null;
         }
 
-        return await dbContext.Database.CreateExecutionStrategy().ExecuteAsync(
-            () => TryDistributeCoreAsync(applicationId, workerId, types, leaseGracePeriod, now, cancellationToken));
+        try
+        {
+            return await dbContext.Database.CreateExecutionStrategy().ExecuteAsync(
+                token => TryDistributeCoreAsync(applicationId, workerId, types, leaseGracePeriod, now, token), cancellationToken);
+        }
+        catch (Exception exception) when (cancellationToken.IsCancellationRequested && exception is SqlException or DbUpdateException)
+        {
+            throw new OperationCanceledException("Execution acquisition was cancelled.", exception, cancellationToken);
+        }
     }
 
     private async Task<JobExecutionAssignment?> TryDistributeCoreAsync(string applicationId, string workerId, string[] types, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken)
@@ -58,6 +65,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
             cancellationToken.ThrowIfCancellationRequested();
             dbContext.ChangeTracker.Clear();
             await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            bool commitStarted = false;
             try
             {
                 Job? job = await dbContext.Jobs.AsNoTracking()
@@ -91,8 +99,19 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
                 dbContext.Entry(job).Property(candidate => candidate.Version).OriginalValue = expectedVersion;
                 dbContext.JobAttempts.Add(attempt);
                 await dbContext.SaveChangesAsync(cancellationToken);
+                commitStarted = true;
                 await transaction.CommitAsync(cancellationToken);
                 return assignment;
+            }
+            catch (Exception exception) when (commitStarted)
+            {
+                dbContext.ChangeTracker.Clear();
+                if (exception is OperationCanceledException)
+                {
+                    throw;
+                }
+
+                throw new InvalidOperationException("The assignment commit could not be confirmed. Check persisted ownership and allow deadline recovery before requesting more work.", exception);
             }
             catch (Exception exception) when (IsDistributionConflict(exception))
             {
