@@ -214,6 +214,7 @@ timeout is resolved first: cancellation then cancels the retrying job, or return
 | `GET` | `/api/jobs/{id}/attempts` | Retrieve attempts in ascending attempt-number order. |
 | `POST` | `/api/jobs/{id}/cancel` | Request cancellation of an unfinished job. |
 | `POST` | `/api/jobs/{id}/retry` | Replay a dead-lettered or cancelled job as a new job. |
+| `POST` | `/api/executions/wait` | Wait for one committed execution assignment, or return `204`. |
 | `GET` | `/api/workers` | Inspect workers and the desired worker count. |
 | `PUT` | `/api/workers/count` | Set the worker count using `{"count": 4}`; accepts `0`–`8`. |
 | `GET` | `/api/stats` | Get current job counts and success rate. |
@@ -225,6 +226,48 @@ timeout is resolved first: cancellation then cancels the retrying job, or return
 Job lists return `items`, `page`, `pageSize`, `totalCount`, and `totalPages`.
 Pages start at `1`; page size defaults to `50` and accepts `1`–`100`.
 For example: `GET /api/jobs?status=Queued&priority=High&page=1&pageSize=25`.
+
+### Wait for work
+
+`POST /api/executions/wait` is available in normal API startup:
+
+```json
+{
+  "applicationId": "billing",
+  "workerId": "worker-01",
+  "supportedTypes": ["generate-report"],
+  "waitSeconds": 20
+}
+```
+
+Application IDs use the existing trim/lowercase normalization. Worker IDs must
+be nonblank and at most 200 characters; their exact spelling is preserved.
+Provide 1 to 100 supported types, each nonblank and at most 100 characters.
+Matching types is case-insensitive. `waitSeconds` accepts integers from 0 to 30,
+defaults to 20, and uses 0 for a single immediate acquisition attempt.
+Invalid input returns `400` before polling the database.
+
+Success returns `200` with `jobId`, `applicationId`, `attemptId`, `attemptNumber`,
+`workerId`, `type`, the JSON `payload`, `timeoutSeconds`, `startedAtUtc`,
+`deadlineAtUtc`, and `leaseExpiresAtUtc`. The job and attempt are already committed
+when returned. Only compatible jobs from the requested application are eligible;
+the existing priority, due-retry, and creation ordering applies. If no assignment
+is available before the wait expires, the response is `204` with no body.
+
+Polling occurs every 500 ms, with a fresh database scope per attempt. Connections
+and transactions are released before waiting. Request disconnects and host shutdown
+cancel pending acquisition and delays. The wait limit also cancels an in-flight
+database acquisition; a zero-second wait still allows its one database operation
+to finish. A claim committed before a disconnect or lost acknowledgement remains
+owned until normal deadline and lease recovery. Neither HTTP delivery nor an
+uncertain commit is automatically replayed to claim another job. Clients should
+inspect existing job/attempt state after uncertain delivery rather than blindly
+retrying the request; a new wait request may claim different work.
+
+For client-only execution, set `Worker:Count` to `0` to disable embedded workers.
+The wait endpoint does not execute handlers. Complete/Fail reporting retains its
+separate opt-in registration through `AddTaskForgeExecutionReporting` and
+`MapTaskForgeExecutionEndpoints`.
 
 ## Request / Response Examples
 
