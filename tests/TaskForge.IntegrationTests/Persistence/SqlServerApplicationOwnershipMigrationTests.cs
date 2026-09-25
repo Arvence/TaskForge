@@ -64,6 +64,15 @@ public sealed class SqlServerApplicationOwnershipMigrationTests(SqlServerFixture
         Assert.Equal(finished, attempt.FinishedAtUtc);
         Assert.Equal(1000, attempt.DurationMilliseconds);
 
+        var history = await new EfCoreJobStore(context).GetAttemptsAsync(completedId);
+        Assert.NotNull(history);
+        Assert.Equal(30, history.TimeoutSeconds);
+        JobAttempt historicalAttempt = Assert.Single(history.Attempts);
+        var response = TaskForge.Api.Jobs.JobAttemptResponse.From(historicalAttempt, history.TimeoutSeconds);
+        Assert.Equal(attemptId, response.AttemptId);
+        Assert.Equal(started.AddSeconds(30), response.DeadlineAtUtc);
+        Assert.Equal(finished, response.FinishedAtUtc);
+
         Guid missingOwnerId = Guid.NewGuid();
         SqlException exception = await Assert.ThrowsAsync<SqlException>(() => context.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO [Jobs] ([Id], [Type], [PayloadJson], [Priority], [Status], [MaxRetries], [RetryCount],

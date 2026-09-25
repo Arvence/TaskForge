@@ -51,7 +51,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
             Assert.Equal(number, persisted.RetryCount);
             Assert.Null(persisted.OwningWorkerId);
             Assert.Null(persisted.LeaseExpiresAtUtc);
-            JobAttempt attempt = (await store.GetAttemptsAsync(job.Id))!.Last();
+            JobAttempt attempt = (await store.GetAttemptsAsync(job.Id))!.Attempts.Last();
             Assert.Equal(number, attempt.AttemptNumber);
             Assert.Equal(start, attempt.StartedAtUtc);
             Assert.Equal("lost-worker", attempt.WorkerId);
@@ -99,7 +99,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         Assert.Equal(JobStatus.Cancelled, cancelled.Status);
         Assert.Equal(0, cancelled.RetryCount);
         Assert.Null(cancelled.NextRetryAtUtc);
-        JobAttempt attempt = Assert.Single((await store.GetAttemptsAsync(job.Id))!);
+        JobAttempt attempt = Assert.Single((await store.GetAttemptsAsync(job.Id))!.Attempts);
         Assert.Equal(JobAttemptOutcome.Cancelled, attempt.Outcome);
         Assert.Equal(legacy ? "LegacyLeaseRecovery" : "CancellationRequested", attempt.ErrorCode);
         Assert.Equal(0, await store.RecoverExpiredLeasesAsync(Now.AddMinutes(2)));

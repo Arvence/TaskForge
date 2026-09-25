@@ -10,11 +10,13 @@ public static class ExecutionWaitEndpointRegistration
     {
         endpoints.MapPost("/api/executions/wait", WaitAsync)
             .WithName("WaitForExecution")
+            .ProducesProblem(StatusCodes.Status500InternalServerError)
             .WithTags("Executions")
             .WithSummary("Wait up to 30 seconds for one compatible execution assignment.")
             .Produces<ExecutionAssignmentResponse>()
             .Produces(StatusCodes.Status204NoContent)
-            .ProducesValidationProblem();
+            .ProducesValidationProblem()
+            .ProducesProblem(StatusCodes.Status415UnsupportedMediaType);
         return endpoints;
     }
 

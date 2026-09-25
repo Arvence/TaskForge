@@ -47,7 +47,7 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
         }
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
-        IReadOnlyList<JobAttempt> attempts = (await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!;
+        IReadOnlyList<JobAttempt> attempts = (await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!.Attempts;
         Assert.Equal([1, 2], attempts.Select(attempt => attempt.AttemptNumber));
         Assert.Equal(JobAttemptOutcome.TimedOut, attempts[0].Outcome);
         Assert.Equal("Timeout", attempts[0].ErrorCode);
@@ -73,7 +73,7 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
         Assert.Null(await workerStore.TryStartAttemptAsync(acquired, Now.AddMinutes(1)));
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
-        Assert.Equal("LegacyLeaseRecovery", Assert.Single((await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!).ErrorCode);
+        Assert.Equal("LegacyLeaseRecovery", Assert.Single((await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!.Attempts).ErrorCode);
         Assert.Equal(JobStatus.Retrying, (await readContext.Jobs.SingleAsync()).Status);
     }
 
@@ -97,7 +97,7 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
         Assert.NotNull(await winningStore.TryStartAttemptAsync(winner, Now));
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
-        JobAttempt attempt = Assert.Single((await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!);
+        JobAttempt attempt = Assert.Single((await new EfCoreJobStore(readContext).GetAttemptsAsync(jobId))!.Attempts);
         Assert.Equal(winner.OwningWorkerId, attempt.WorkerId);
         Assert.Equal(1, attempt.AttemptNumber);
     }

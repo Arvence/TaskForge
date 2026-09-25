@@ -26,6 +26,9 @@ if (string.IsNullOrWhiteSpace(connectionString))
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+// Swagger reads MVC JSON options when generating response schemas.
+builder.Services.Configure<Microsoft.AspNetCore.Mvc.JsonOptions>(options =>
+    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options => options.SwaggerDoc("v1", new()
 {
@@ -33,6 +36,7 @@ builder.Services.AddSwaggerGen(options => options.SwaggerDoc("v1", new()
     Version = typeof(Program).Assembly.GetName().Version!.ToString(3)
 }));
 builder.Services.AddProblemDetails();
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<SubmitJobValidator>();
 builder.Services.AddScoped<JobManager>();
@@ -74,36 +78,40 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     await Results.Problem(statusCode: statusCode).ExecuteAsync(context);
 }));
 
+app.UseStatusCodePages();
+
 app.UseSwagger(options =>
     options.RouteTemplate = "openapi/{documentName}.json");
 
-app.MapGet("/", () => Results.Redirect("/api/health"));
+app.MapGet("/", () => Results.Redirect("/api/health"))
+    .Produces(StatusCodes.Status302Found);
 app.MapTaskForgeExecutionWaitEndpoint();
 app.MapTaskForgeExecutionEndpoints();
 
-app.MapGet("/api/health", () => Results.Ok(new
-{
-    Status = "Healthy",
-    Service = "TaskForge.Api",
-    TimestampUtc = DateTimeOffset.UtcNow
-}));
+app.MapGet("/api/health", () => Results.Ok(new HealthResponse("Healthy", "TaskForge.Api", DateTimeOffset.UtcNow)))
+    .WithName("GetHealth")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
+    .WithTags("Health")
+    .Produces<HealthResponse>();
 
 app.MapGet("/api/ready", async (TaskForgeDbContext dbContext, CancellationToken cancellationToken) =>
 {
     bool ready = await dbContext.Database.CanConnectAsync(cancellationToken);
     return Results.Json(
-        new { Status = ready ? "Ready" : "Unavailable" },
+        new ReadinessResponse(ready ? "Ready" : "Unavailable"),
         statusCode: ready ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
 })
     .WithName("GetReadiness")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Health")
     .WithSummary("Check connectivity to the configured SQL Server database.")
-    .Produces(StatusCodes.Status200OK)
-    .Produces(StatusCodes.Status503ServiceUnavailable);
+    .Produces<ReadinessResponse>(StatusCodes.Status200OK)
+    .Produces<ReadinessResponse>(StatusCodes.Status503ServiceUnavailable);
 
 app.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, CancellationToken cancellationToken) =>
     Results.Ok(await statisticsReader.GetAsync(cancellationToken)))
     .WithName("GetStats")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Stats")
     .WithSummary("Get current status counts for all stored jobs.")
     .WithDescription(
@@ -120,11 +128,7 @@ app.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, Cancellat
         + "An empty database returns 200 OK with zero counts and a null success rate.")
     .Produces<JobStatistics>(StatusCodes.Status200OK);
 
-app.MapPost("/api/jobs", async Task<IResult> (
-    SubmitJobRequest request,
-    [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
-    JobManager jobManager,
-    CancellationToken cancellationToken) =>
+app.MapPost("/api/jobs", async Task<IResult> (SubmitJobRequest request, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, JobManager jobManager, CancellationToken cancellationToken) =>
 {
     try
     {
@@ -145,30 +149,20 @@ app.MapPost("/api/jobs", async Task<IResult> (
     }
     catch (IdempotencyConflictException exception)
     {
-        return Results.Conflict(new
-        {
-            Message = exception.Message,
-            exception.IdempotencyKey
-        });
+        return Results.Conflict(new IdempotencyConflictResponse(exception.Message, exception.IdempotencyKey));
     }
 })
     .WithName("SubmitJob")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Submit a durable background job.")
     .Produces<JobResponse>(StatusCodes.Status201Created)
     .Produces<JobResponse>(StatusCodes.Status200OK)
     .ProducesValidationProblem()
-    .Produces(StatusCodes.Status409Conflict);
+    .Produces<IdempotencyConflictResponse>(StatusCodes.Status409Conflict)
+    .ProducesProblem(StatusCodes.Status415UnsupportedMediaType);
 
-app.MapGet("/api/jobs", async Task<IResult> (
-    JobManager jobManager,
-    CancellationToken cancellationToken,
-    [FromQuery] JobStatus? status = null,
-    [FromQuery] string? type = null,
-    [FromQuery] JobPriority? priority = null,
-    [FromQuery] int page = 1,
-    [FromQuery] int pageSize = ListJobsQuery.DefaultPageSize,
-    [FromQuery] string? applicationId = null) =>
+app.MapGet("/api/jobs", async Task<IResult> (JobManager jobManager, CancellationToken cancellationToken, [FromQuery] JobStatus? status = null, [FromQuery] string? type = null, [FromQuery] JobPriority? priority = null, [FromQuery] int page = 1, [FromQuery] int pageSize = ListJobsQuery.DefaultPageSize, [FromQuery] string? applicationId = null) =>
 {
     try
     {
@@ -184,39 +178,40 @@ app.MapGet("/api/jobs", async Task<IResult> (
     }
 })
     .WithName("ListJobs")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Filter and page jobs in newest-first order.")
     .Produces<JobPageResponse>()
     .ProducesValidationProblem();
 
-app.MapGet("/api/jobs/{id:guid}", async Task<IResult> (
-    Guid id,
-    JobManager jobManager,
-    CancellationToken cancellationToken) =>
+app.MapGet("/api/jobs/{id:guid}", async Task<IResult> (Guid id, JobManager jobManager, CancellationToken cancellationToken) =>
 {
     Job? job = await jobManager.GetByIdAsync(id, cancellationToken);
     return job is not null
         ? Results.Ok(JobResponse.From(job))
-        : Results.NotFound(new { Message = $"Job '{id}' was not found." });
+        : Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found."));
 })
     .WithName("GetJob")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Get a job by ID.")
     .Produces<JobResponse>()
-    .Produces(StatusCodes.Status404NotFound);
+    .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound);
 
 app.MapGet("/api/jobs/{id:guid}/attempts", async Task<IResult> (Guid id, IJobAttemptReader attemptReader, CancellationToken cancellationToken) =>
 {
-    IReadOnlyList<JobAttempt>? attempts = await attemptReader.GetAttemptsAsync(id, cancellationToken);
-    return attempts is null
-        ? Results.NotFound(new { Message = $"Job '{id}' was not found." })
-        : Results.Ok(attempts.Select(JobAttemptResponse.From).ToArray());
+    JobAttemptHistory? history = await attemptReader.GetAttemptsAsync(id, cancellationToken);
+    return history is null
+        ? Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found."))
+        : Results.Ok(history.Attempts.Select(attempt => JobAttemptResponse.From(attempt, history.TimeoutSeconds)).ToArray());
 })
     .WithName("GetJobAttempts")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Get execution attempts in ascending attempt-number order.")
+    .WithDescription("Includes persisted attemptId and deadlineAtUtc derived from startedAtUtc plus the job timeout. Lease grace does not extend the deadline.")
     .Produces<JobAttemptResponse[]>()
-    .Produces(StatusCodes.Status404NotFound);
+    .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound);
 
 app.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManager jobManager, CancellationToken cancellationToken) =>
 {
@@ -228,12 +223,8 @@ app.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManage
             JobReplayStatus.Created =>
                 Results.Created($"/api/jobs/{result.Job!.Id}", JobResponse.From(result.Job)),
             JobReplayStatus.NotFound =>
-                Results.NotFound(new { Message = $"Job '{id}' was not found." }),
-            _ => Results.Conflict(new
-            {
-                Message = $"Job '{id}' cannot be replayed. Only DeadLettered or Cancelled jobs can be replayed.",
-                Status = result.Job!.Status
-            })
+                Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found.")),
+            _ => Results.Conflict(new JobConflictResponse($"Job '{id}' cannot be replayed. Only DeadLettered or Cancelled jobs can be replayed.", result.Job!.Status))
         };
     }
     catch (ApplicationValidationException exception)
@@ -243,6 +234,7 @@ app.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManage
     }
 })
     .WithName("ReplayJob")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Replay a dead-lettered or cancelled job as a new execution.")
     .WithDescription(
@@ -251,13 +243,10 @@ app.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManage
         + "the Idempotency-Key header is ignored and each successful call creates a separate job.")
     .Produces<JobResponse>(StatusCodes.Status201Created)
     .ProducesValidationProblem()
-    .Produces(StatusCodes.Status404NotFound)
-    .Produces(StatusCodes.Status409Conflict);
+    .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces<JobConflictResponse>(StatusCodes.Status409Conflict);
 
-app.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (
-    Guid id,
-    JobCancellationService cancellationService,
-    CancellationToken cancellationToken) =>
+app.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (Guid id, JobCancellationService cancellationService, CancellationToken cancellationToken) =>
 {
     JobCancellationResult result = await cancellationService.RequestAsync(
         id,
@@ -268,30 +257,25 @@ app.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (
         JobCancellationStatus.Accepted =>
             Results.Ok(JobResponse.From(result.Job!)),
         JobCancellationStatus.NotFound =>
-            Results.NotFound(new { Message = $"Job '{id}' was not found." }),
+            Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found.")),
         JobCancellationStatus.AlreadyFinished =>
-            Results.Conflict(new
-            {
-                Message = $"Job '{id}' is already finished.",
-                Status = result.Job!.Status
-            }),
-        _ => Results.Conflict(new
-        {
-            Message = $"Job '{id}' was updated concurrently; retry cancellation."
-        })
+            Results.Conflict(new JobConflictResponse($"Job '{id}' is already finished.", result.Job!.Status)),
+        _ => Results.Conflict(new JobConflictResponse($"Job '{id}' was updated concurrently; retry cancellation."))
     };
 })
     .WithName("CancelJob")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Request cancellation of a queued or running job.")
     .Produces<JobResponse>()
-    .Produces(StatusCodes.Status404NotFound)
-    .Produces(StatusCodes.Status409Conflict);
+    .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound)
+    .Produces<JobConflictResponse>(StatusCodes.Status409Conflict);
 
 app.MapGet("/api/workers", () => Results.Problem(
     statusCode: StatusCodes.Status410Gone,
     detail: "Server worker management has been retired. External clients acquire work through POST /api/executions/wait."))
     .WithName("GetWorkers")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Workers")
     .WithSummary("Retired server worker management endpoint.")
     .ProducesProblem(StatusCodes.Status410Gone);
@@ -300,6 +284,7 @@ app.MapPut("/api/workers/count", () => Results.Problem(
     statusCode: StatusCodes.Status410Gone,
     detail: "Server worker scaling has been retired. Configure execution capacity in external clients."))
     .WithName("SetWorkerCount")
+    .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Workers")
     .WithSummary("Retired server worker scaling endpoint.")
     .ProducesProblem(StatusCodes.Status410Gone);

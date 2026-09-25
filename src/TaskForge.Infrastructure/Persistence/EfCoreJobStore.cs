@@ -503,16 +503,19 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
                 .SetProperty(candidate => candidate.ErrorMessage, attempt.ErrorMessage), cancellationToken);
     }
 
-    public async Task<IReadOnlyList<JobAttempt>?> GetAttemptsAsync(Guid jobId, CancellationToken cancellationToken = default)
+    public async Task<JobAttemptHistory?> GetAttemptsAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
-        if (!await dbContext.Jobs.AnyAsync(job => job.Id == jobId, cancellationToken))
+        int? timeoutSeconds = await dbContext.Jobs.Where(job => job.Id == jobId)
+            .Select(job => (int?)job.TimeoutSeconds).SingleOrDefaultAsync(cancellationToken);
+        if (timeoutSeconds is null)
         {
             return null;
         }
 
-        return await dbContext.JobAttempts.AsNoTracking()
+        List<JobAttempt> attempts = await dbContext.JobAttempts.AsNoTracking()
             .Where(attempt => attempt.JobId == jobId)
             .OrderBy(attempt => attempt.AttemptNumber)
             .ToListAsync(cancellationToken);
+        return new JobAttemptHistory(timeoutSeconds.Value, attempts);
     }
 }

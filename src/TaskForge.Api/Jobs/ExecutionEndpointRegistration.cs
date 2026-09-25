@@ -16,18 +16,22 @@ public static class ExecutionEndpointRegistration
     {
         endpoints.MapPost("/api/jobs/{jobId:guid}/attempts/{attemptId:guid}/complete", CompleteAsync)
             .WithName("CompleteExecution")
+            .ProducesProblem(StatusCodes.Status500InternalServerError)
             .WithTags("Executions")
             .WithSummary("Complete an execution or acknowledge an identical accepted report.")
             .Produces<JobResponse>()
             .ProducesValidationProblem()
+            .ProducesProblem(StatusCodes.Status415UnsupportedMediaType)
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict);
         endpoints.MapPost("/api/jobs/{jobId:guid}/attempts/{attemptId:guid}/fail", FailAsync)
             .WithName("FailExecution")
+            .ProducesProblem(StatusCodes.Status500InternalServerError)
             .WithTags("Executions")
             .WithSummary("Report an execution failure using server-owned retry and permanent-error policy.")
             .Produces<JobResponse>()
             .ProducesValidationProblem()
+            .ProducesProblem(StatusCodes.Status415UnsupportedMediaType)
             .ProducesProblem(StatusCodes.Status404NotFound)
             .ProducesProblem(StatusCodes.Status409Conflict);
         return endpoints;

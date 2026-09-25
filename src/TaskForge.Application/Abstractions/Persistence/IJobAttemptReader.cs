@@ -1,8 +1,8 @@
-using TaskForge.Domain.Jobs;
+using TaskForge.Application.Jobs.Models;
 
 namespace TaskForge.Application.Abstractions.Persistence;
 
 public interface IJobAttemptReader
 {
-    Task<IReadOnlyList<JobAttempt>?> GetAttemptsAsync(Guid jobId, CancellationToken cancellationToken = default);
+    Task<JobAttemptHistory?> GetAttemptsAsync(Guid jobId, CancellationToken cancellationToken = default);
 }

@@ -410,7 +410,7 @@ public sealed class JobExecutorTests(SqlServerFixture fixture) : SqlServerTest(f
     private async Task<IReadOnlyList<JobAttempt>> ReadAttemptsAsync(Guid jobId)
     {
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        return (await new EfCoreJobStore(context).GetAttemptsAsync(jobId))!;
+        return (await new EfCoreJobStore(context).GetAttemptsAsync(jobId))!.Attempts;
     }
 
     private sealed class CompletionSaveInterceptor : SaveChangesInterceptor

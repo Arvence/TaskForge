@@ -13,6 +13,8 @@ using Microsoft.Extensions.Hosting;
 using TaskForge.Infrastructure.Persistence;
 using TaskForge.Domain.Jobs;
 using TaskForge.Api.Jobs;
+using TaskForge.Application.Abstractions.Persistence;
+using TaskForge.Application.Jobs.Models;
 
 namespace TaskForge.IntegrationTests.Api;
 
@@ -345,7 +347,11 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal(JsonValueKind.Null, attempts[1].GetProperty("finishedAtUtc").ValueKind);
         Assert.Equal(JsonValueKind.Null, attempts[1].GetProperty("durationMilliseconds").ValueKind);
         Assert.Equal(JsonValueKind.Null, attempts[1].GetProperty("errorMessage").ValueKind);
-        Assert.Equal(9, attempts[0].EnumerateObject().Count());
+        Assert.Equal(first.Id, attempts[0].GetProperty("attemptId").GetGuid());
+        Assert.Equal(second.Id, attempts[1].GetProperty("attemptId").GetGuid());
+        Assert.Equal(start.AddSeconds(15), attempts[0].GetProperty("deadlineAtUtc").GetDateTimeOffset());
+        Assert.Equal(second.StartedAtUtc.AddSeconds(15), attempts[1].GetProperty("deadlineAtUtc").GetDateTimeOffset());
+        Assert.Equal(11, attempts[0].EnumerateObject().Count());
         Assert.False(attempts[0].TryGetProperty("id", out _));
     }
 
@@ -437,6 +443,40 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal(2, (await all.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("totalCount").GetInt32());
         using HttpResponseMessage invalidFilter = await client.GetAsync("/api/jobs?applicationId=a%2Fb");
         Assert.Equal(HttpStatusCode.BadRequest, invalidFilter.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("page=invalid")]
+    [InlineData("status=invalid")]
+    [InlineData("priority=invalid")]
+    public async Task Invalid_query_binding_returns_problem_details(string query)
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        using HttpResponseMessage response = await client.GetAsync($"/api/jobs?{query}");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(400, (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetInt32());
+    }
+
+    [Fact]
+    public async Task Unexpected_failure_returns_generic_problem_without_exception_details()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory().WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services => services.AddScoped<IJobStatisticsReader, ThrowingStatisticsReader>()));
+        using HttpClient client = factory.CreateClient();
+        using HttpResponseMessage response = await client.GetAsync("/api/stats");
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(500, JsonSerializer.Deserialize<JsonElement>(body).GetProperty("status").GetInt32());
+        Assert.DoesNotContain("Internal failure details", body);
+        Assert.DoesNotContain(nameof(InvalidOperationException), body);
+    }
+
+    private sealed class ThrowingStatisticsReader : IJobStatisticsReader
+    {
+        public Task<JobStatistics> GetAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException("Internal failure details");
     }
 
     private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
