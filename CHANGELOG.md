@@ -7,6 +7,8 @@ SQLite-based `v1.0.0` release and are not included in that tag.
 
 ### Added
 
+- Independent server maintenance for execution deadlines, with bounded batches,
+  SQL Server time, and atomic timeout/history updates before lease grace expires.
 - Execution attempt recording with worker identifiers, timing, duration,
   outcomes, and bounded error details in the existing `JobAttempts` table.
 - `GET /api/jobs/{id}/attempts` with ascending attempt-number ordering,

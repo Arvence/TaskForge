@@ -201,6 +201,15 @@ flowchart LR
 
 `Pending` is the initial domain state; accepted submissions are stored as
 `Queued`. Retries wait for their backoff before becoming eligible again.
+
+Server maintenance expires running attempts on polls at or after
+`startedAtUtc + timeoutSeconds`, using SQL Server time without waiting for lease
+grace or a client report. Each poll checks up to 100 due executions and rechecks
+ownership, cancellation, and the deadline transactionally before recording a
+timeout. Expiration applies the normal retry budget and backoff, or dead-letters
+an exhausted job. Maintenance runs without connected clients and retries after
+database failures.
+
 Lease recovery applies the timeout retry budget and backoff to interrupted work,
 ending in `DeadLettered` when retries are exhausted. Requested cancellation wins
 and becomes `Cancelled` without consuming a retry. Cancelling a running job before
