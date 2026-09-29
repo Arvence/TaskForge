@@ -4,6 +4,8 @@ namespace TaskForge.Application.Abstractions.Persistence;
 
 public interface IExecutionStore
 {
+    Task ExpireDueExecutionsAsync(CancellationToken cancellationToken = default);
+
     Task<JobCancellationResult> CancelAsync(Guid jobId, CancellationToken cancellationToken = default);
 
     Task<ExecutionLookup> FindExecutionAsync(ExecutionIdentity identity, CancellationToken cancellationToken = default);

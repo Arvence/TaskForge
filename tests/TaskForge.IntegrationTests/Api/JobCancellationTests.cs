@@ -85,10 +85,10 @@ public sealed class JobCancellationTests(SqlServerFixture fixture) : SqlServerTe
     [Theory]
     [InlineData(0)]
     [InlineData(2)]
-    public async Task Deadline_is_resolved_before_cancellation_even_during_lease_grace(int maxRetries)
+    public async Task Deadline_is_resolved_before_cancellation_during_lease_grace_without_maintenance(int maxRetries)
     {
         Job job = await SeedAsync(JobStatus.Processing, expired: true, maxRetries: maxRetries);
-        await using WebApplicationFactory<Program> factory = CreateFactory();
+        await using WebApplicationFactory<Program> factory = CreateFactory(maintenanceEnabled: false);
         using HttpClient client = factory.CreateClient();
 
         using HttpResponseMessage response = await client.PostAsync($"/api/jobs/{job.Id}/cancel", null);
@@ -311,9 +311,13 @@ public sealed class JobCancellationTests(SqlServerFixture fixture) : SqlServerTe
         return job;
     }
 
-    private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateFactory(bool maintenanceEnabled = true) => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
+        if (!maintenanceEnabled)
+        {
+            builder.ConfigureServices(services => services.Remove(services.Single(service => service.ImplementationType == typeof(JobMaintenanceService))));
+        }
     });
 
     private static EfCoreExecutionStore Store(TaskForgeDbContext context) => new(context, new JobRetryPolicy(Options.Create(new WorkerOptions())));

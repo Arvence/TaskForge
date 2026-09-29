@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using TaskForge.Application.Abstractions.Execution;
+using TaskForge.Application.Abstractions.Persistence;
 
 namespace TaskForge.Application.Workers;
 
@@ -16,6 +17,8 @@ public sealed class JobMaintenanceService(IServiceScopeFactory scopeFactory, Tim
             try
             {
                 await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+                IExecutionStore executions = scope.ServiceProvider.GetRequiredService<IExecutionStore>();
+                await executions.ExpireDueExecutionsAsync(stoppingToken);
                 IJobQueue queue = scope.ServiceProvider.GetRequiredService<IJobQueue>();
                 int recovered = await queue.RecoverExpiredLeasesAsync(timeProvider.GetUtcNow(), stoppingToken);
                 if (recovered > 0)

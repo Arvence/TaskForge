@@ -11,6 +11,29 @@ namespace TaskForge.Infrastructure.Persistence;
 public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryPolicy retryPolicy) : IExecutionStore
 {
     private const int MaximumTransitionAttempts = 5;
+    private const int ExpirationBatchSize = 100;
+
+    public async Task ExpireDueExecutionsAsync(CancellationToken cancellationToken = default)
+    {
+        DateTimeOffset now = await GetSqlUtcNowAsync(cancellationToken);
+        var candidates = await (from job in dbContext.Jobs.AsNoTracking()
+                                join attempt in dbContext.JobAttempts.AsNoTracking() on job.Id equals attempt.JobId
+                                where job.Status == JobStatus.Processing && attempt.Outcome == JobAttemptOutcome.Running
+                                    && job.StartedAtUtc == attempt.StartedAtUtc && job.LeaseExpiresAtUtc != null
+                                    && EF.Functions.Collate(job.OwningWorkerId!, "Latin1_General_100_BIN2") == attempt.WorkerId
+                                    && attempt.StartedAtUtc.AddSeconds(job.TimeoutSeconds) <= now
+                                    && !dbContext.JobAttempts.Any(later => later.JobId == job.Id && later.AttemptNumber > attempt.AttemptNumber)
+                                orderby attempt.StartedAtUtc.AddSeconds(job.TimeoutSeconds), job.Id
+                                select new { job.ApplicationId, JobId = job.Id, AttemptId = attempt.Id, attempt.WorkerId })
+            .Take(ExpirationBatchSize)
+            .ToListAsync(cancellationToken);
+
+        foreach (var candidate in candidates)
+        {
+            ExecutionIdentity identity = new(candidate.ApplicationId, candidate.JobId, candidate.AttemptId, candidate.WorkerId);
+            await TransitionAsync(identity, new ExecutionReport.Timeout(), cancellationToken);
+        }
+    }
 
     public Task<JobCancellationResult> CancelAsync(Guid jobId, CancellationToken cancellationToken = default) =>
         dbContext.Database.CreateExecutionStrategy().ExecuteAsync(() => CancelCoreAsync(jobId, cancellationToken));
