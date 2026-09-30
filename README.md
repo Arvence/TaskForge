@@ -167,14 +167,19 @@ flowchart LR
 - **Application:** envelope validation, job workflows, and execution orchestration;
   depends on persistence interfaces rather than EF Core.
 - **Domain:** job states, attempt outcomes, and lifecycle rules.
-- **Infrastructure:** EF Core persistence and SQL Server migrations. Legacy handler
-  source remains for later relocation and is not registered by the server.
+- **Infrastructure:** EF Core persistence and SQL Server migrations.
 
 A submission is validated, queued, and saved before the API returns its ID.
 External clients acquire eligible jobs and report completion or failure through
 the server protocol. Maintenance recovers expired executions even when no clients
 are connected. Submission validates the envelope and JSON, not business payloads.
 Types such as `send-email` require no server-side implementation.
+
+The server contains no in-process executor, worker manager, business handlers, or
+local cancellation callbacks. Acquisition creates ownership and an attempt together;
+execution reports and cancellation use guarded server transitions. Historical worker
+tables remain mapped for database compatibility, and maintenance still reconciles
+jobs left by the retired execution model.
 
 ## Job Lifecycle
 
@@ -375,8 +380,8 @@ returned by `GET /api/jobs/{id}`:
 
 Business payload rules belong to the execution client. TaskForge accepts valid JSON
 without resolving a handler; a client can report `InvalidPayload` through the Fail
-endpoint to record a permanent failure. Existing handler source is retained for
-later relocation and does not run in the API host.
+endpoint to record a permanent failure. Handler implementations belong in the
+execution client.
 
 ### Retrieve a job
 
