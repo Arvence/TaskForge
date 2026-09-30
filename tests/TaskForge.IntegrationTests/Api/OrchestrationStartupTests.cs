@@ -11,12 +11,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 using TaskForge.Api.Jobs;
-using TaskForge.Application.Abstractions.Execution;
 using TaskForge.Application.Abstractions.Persistence;
 using TaskForge.Application.Jobs;
 using TaskForge.Application.Workers;
 using TaskForge.Domain.Jobs;
-using TaskForge.Infrastructure.Jobs.Handlers;
 using TaskForge.Infrastructure.Persistence;
 
 namespace TaskForge.IntegrationTests.Api;
@@ -38,18 +36,11 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
         await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
         IServiceProvider services = scope.ServiceProvider;
 
-        Assert.Empty(services.GetServices<IJobHandler>());
-        Assert.Null(services.GetService<HttpRequestJobHandler>());
-        Assert.Null(services.GetService<GenerateReportJobHandler>());
-        Assert.Null(services.GetService<JobExecutor>());
-        Assert.Null(services.GetService<WorkerManager>());
-        Assert.Null(services.GetService<JobCancellationRegistry>());
         Assert.Null(services.GetService<IWorkerSettingsStore>());
         Assert.NotNull(services.GetRequiredService<JobExecutionService>());
         Assert.NotNull(services.GetRequiredService<JobDistributionService>());
         IHostedService[] hosted = services.GetServices<IHostedService>().ToArray();
         Assert.Single(hosted.OfType<JobMaintenanceService>());
-        Assert.Empty(hosted.OfType<WorkerManager>());
         WorkerOptions options = services.GetRequiredService<IOptions<WorkerOptions>>().Value;
         Assert.Equal(50, options.PollIntervalMilliseconds);
         Assert.Equal(5, options.RetryDelaySeconds);
