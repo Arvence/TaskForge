@@ -226,7 +226,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         await SeedAsync();
         PauseBeforeSave pause = new();
         PollObserver observer = new();
-        await using WebApplication app = await CreateAppAsync(observer, pause);
+        await using WebApplication app = await CreateAppAsync(observer, [pause]);
         using HttpClient client = app.GetTestClient();
         using CancellationTokenSource disconnected = new();
         Task<HttpResponseMessage> waiting = PostAsync(client, 30, cancellationToken: disconnected.Token);
@@ -246,7 +246,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         await SeedAsync();
         PauseAfterCommit pause = new();
         PollObserver observer = new();
-        await using WebApplication app = await CreateAppAsync(observer, pause);
+        await using WebApplication app = await CreateAppAsync(observer, [pause]);
         using HttpClient client = app.GetTestClient();
         using CancellationTokenSource disconnected = new();
         Task<HttpResponseMessage> waiting = PostAsync(client, 30, cancellationToken: disconnected.Token);
@@ -321,16 +321,55 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         }
     }
 
-    private async Task<WebApplication> CreateAppAsync(PollObserver? observer = null, params IInterceptor[] interceptors)
+    [Theory]
+    [InlineData(-24)]
+    [InlineData(24)]
+    public async Task Api_clock_skew_does_not_change_retry_eligibility_or_assignment_deadlines(int clockOffsetHours)
+    {
+        await using TaskForgeDbContext seed = new(DatabaseOptions);
+        DateTimeOffset before = await seed.Database.SqlQuery<DateTimeOffset>($"SELECT TODATETIMEOFFSET(SYSUTCDATETIME(), '+00:00') AS [Value]").SingleAsync();
+        Job due = new(Guid.NewGuid(), "test-app", "remote-only", "{}", JobPriority.Normal, 3, 300, before.AddMinutes(-10));
+        Job future = new(Guid.NewGuid(), "test-app", "remote-only", "{}", JobPriority.High, 3, 300, before.AddMinutes(-10));
+        foreach (Job job in new[] { due, future })
+        {
+            job.Queue(before.AddMinutes(-10));
+            job.StartProcessing("old-worker", before.AddMinutes(-1), before.AddMinutes(-10));
+            job.Fail("Retry later.", job == due ? before : before.AddHours(1), before.AddMinutes(-5));
+            seed.Jobs.Add(job);
+        }
+
+        await seed.SaveChangesAsync();
+        await using WebApplication app = await CreateAppAsync(clock: new SkewedClock(TimeSpan.FromHours(clockOffsetHours)));
+        using HttpClient client = app.GetTestClient();
+        using HttpResponseMessage response = await PostAsync(client);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        ExecutionAssignmentResponse assignment = (await response.Content.ReadFromJsonAsync<ExecutionAssignmentResponse>())!;
+        DateTimeOffset after = await seed.Database.SqlQuery<DateTimeOffset>($"SELECT TODATETIMEOFFSET(SYSUTCDATETIME(), '+00:00') AS [Value]").SingleAsync();
+        Assert.Equal(due.Id, assignment.JobId);
+        Assert.InRange(assignment.StartedAtUtc, before, after);
+        Assert.Equal(assignment.StartedAtUtc.AddSeconds(due.TimeoutSeconds), assignment.DeadlineAtUtc);
+        using HttpResponseMessage completed = await client.PostAsJsonAsync($"/api/jobs/{due.Id}/attempts/{assignment.AttemptId}/complete",
+            new { applicationId = "test-app", workerId = "worker-01" });
+        Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
+        using HttpResponseMessage remaining = await PostAsync(client);
+        Assert.Equal(HttpStatusCode.NoContent, remaining.StatusCode);
+        await using TaskForgeDbContext read = new(DatabaseOptions);
+        Assert.Equal(JobStatus.Completed, (await read.Jobs.SingleAsync(job => job.Id == due.Id)).Status);
+        Assert.Equal(JobStatus.Retrying, (await read.Jobs.SingleAsync(job => job.Id == future.Id)).Status);
+        Assert.Single(await read.JobAttempts.ToListAsync());
+    }
+
+    private async Task<WebApplication> CreateAppAsync(PollObserver? observer = null, IInterceptor[]? interceptors = null, TimeProvider? clock = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         builder.Services.AddTaskForgeSqlServer(ConnectionString);
         builder.Services.RemoveAll<DbContextOptions<TaskForgeDbContext>>();
-        builder.Services.AddDbContext<TaskForgeDbContext>(options => options.UseSqlServer(ConnectionString, sql => sql.EnableRetryOnFailure()).AddInterceptors(interceptors));
-        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddDbContext<TaskForgeDbContext>(options => options.UseSqlServer(ConnectionString, sql => sql.EnableRetryOnFailure()).AddInterceptors(interceptors ?? []));
+        builder.Services.AddSingleton(clock ?? TimeProvider.System);
         builder.Services.AddSingleton<JobRetryPolicy>();
         builder.Services.AddSingleton<JobDistributionService>();
+        builder.Services.AddTaskForgeExecutionReporting();
         builder.Services.AddSingleton(observer ?? new PollObserver());
         builder.Services.AddScoped<PollScope>();
         builder.Services.AddScoped<IJobQueue>(provider =>
@@ -340,6 +379,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         });
         WebApplication app = builder.Build();
         app.MapTaskForgeExecutionWaitEndpoint();
+        app.MapTaskForgeExecutionEndpoints();
         await app.StartAsync();
         return app;
     }
@@ -356,6 +396,11 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
 
     private static Task<HttpResponseMessage> PostAsync(HttpClient client, int waitSeconds = 0, string workerId = "worker-01", CancellationToken cancellationToken = default) =>
         client.PostAsJsonAsync("/api/executions/wait", new WaitForExecutionRequest("test-app", workerId, ["remote-only"], waitSeconds), cancellationToken);
+
+    private sealed class SkewedClock(TimeSpan offset) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UtcNow.Add(offset);
+    }
 
     private sealed class PollObserver
     {
