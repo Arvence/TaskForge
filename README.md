@@ -271,6 +271,13 @@ when returned. Only compatible jobs from the requested application are eligible;
 the existing priority, due-retry, and creation ordering applies. If no assignment
 is available before the wait expires, the response is `204` with no body.
 
+Retry eligibility and assignment timestamps use SQL Server UTC, matching execution
+reporting. Acquisition locks and rechecks the selected job before reading its start
+time, so selection and ownership lock waits do not consume the execution timeout.
+Retries refresh that time. The deadline remains `startedAtUtc + timeoutSeconds`,
+and the lease adds the configured grace period. Commit and response delivery take
+place after the start time; clients must honor the returned deadline.
+
 Polling occurs every 500 ms, with a fresh database scope per attempt. Connections
 and transactions are released before waiting. Request disconnects and host shutdown
 cancel pending acquisition and delays. The wait limit also cancels an in-flight
