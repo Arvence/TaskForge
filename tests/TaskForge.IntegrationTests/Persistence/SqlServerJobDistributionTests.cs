@@ -1,3 +1,5 @@
+using System.Data.Common;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 
@@ -12,7 +14,7 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 23, 12, 0, 0, TimeSpan.Zero);
     private static readonly TimeSpan Grace = TimeSpan.FromSeconds(30);
-    private DbContextOptions<TaskForgeDbContext> DistributionOptions => new DbContextOptionsBuilder<TaskForgeDbContext>()
+    private DbContextOptions<TaskForgeDbContext> DistributionOptions => new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions)
         .UseSqlServer(ConnectionString, options => options.EnableRetryOnFailure()).Options;
 
     [Fact]
@@ -51,7 +53,7 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
         Job[] jobs = Enumerable.Range(0, jobCount).Select(_ => CreateJob()).ToArray();
         await SeedAsync(jobs);
         DbContextOptions<TaskForgeDbContext> options = new DbContextOptionsBuilder<TaskForgeDbContext>(DistributionOptions)
-            .AddInterceptors(new ConcurrentSaveInterceptor()).Options;
+            .AddInterceptors(new ConcurrentAcquisitionInterceptor()).Options;
         await using TaskForgeDbContext first = new(options);
         await using TaskForgeDbContext second = new(options);
 
@@ -88,12 +90,12 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
         EfCoreJobStore store = new(context);
 
         JobExecutionAssignment assignment = Assert.IsType<JobExecutionAssignment>(
-            await store.TryDistributeAsync(" TEST-APP ", "worker-01", ["EXAMPLE", "SECOND-TYPE"], Grace, Now));
+            await store.DistributeAtAsync(" TEST-APP ", "worker-01", ["EXAMPLE", "SECOND-TYPE"], Grace, Now));
 
         Assert.Equal(supported.Id, assignment.Job.Id);
-        Assert.Null(await store.TryDistributeAsync("test-app", "worker-01", ["example", "second-type"], Grace, Now));
-        Assert.Null(await store.TryDistributeAsync("missing-app", "worker-01", ["example"], Grace, Now));
-        Assert.Null(await store.TryDistributeAsync("other-app", "worker-01", [], Grace, Now));
+        Assert.Null(await store.DistributeAtAsync("test-app", "worker-01", ["example", "second-type"], Grace, Now));
+        Assert.Null(await store.DistributeAtAsync("missing-app", "worker-01", ["example"], Grace, Now));
+        Assert.Null(await store.DistributeAtAsync("other-app", "worker-01", [], Grace, Now));
         await using TaskForgeDbContext readContext = new(DistributionOptions);
         Assert.Equal(2, await readContext.Jobs.CountAsync(job => job.Status == JobStatus.Queued));
         Assert.Equal(1, await readContext.JobAttempts.CountAsync());
@@ -203,7 +205,7 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
 
         Assert.Null(await DistributeAsync(context));
 
-        Assert.Equal(5, conflicts.SaveCount);
+        Assert.Equal(5, conflicts.LockCount);
         Assert.Equal(Enumerable.Range(1, 5).Select(value => (long)value), conflicts.ObservedVersions);
         await using TaskForgeDbContext readContext = new(DistributionOptions);
         Job persisted = await readContext.Jobs.SingleAsync();
@@ -221,14 +223,14 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new EfCoreJobStore(context)
-            .TryDistributeAsync("test-app", "worker-01", ["example"], Grace, Now, cancellation.Token));
+            .DistributeAtAsync("test-app", "worker-01", ["example"], Grace, Now, cancellation.Token));
 
         Assert.Equal(JobStatus.Queued, (await context.Jobs.SingleAsync()).Status);
         Assert.Empty(await context.JobAttempts.ToListAsync());
     }
 
     private static Task<JobExecutionAssignment?> DistributeAsync(TaskForgeDbContext context, string workerId = "worker-01", DateTimeOffset? now = null) =>
-        new EfCoreJobStore(context).TryDistributeAsync("test-app", workerId, ["example"], Grace, now ?? Now);
+        new EfCoreJobStore(context).DistributeAtAsync("test-app", workerId, ["example"], Grace, now ?? Now);
 
     private async Task SeedAsync(params Job[] jobs)
     {
@@ -276,19 +278,45 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
         }
     }
 
-    private sealed class ChangeVersionInterceptor(DbContextOptions<TaskForgeDbContext> options, Guid jobId) : SaveChangesInterceptor
+    private static bool IsAcquisitionLock(DbCommand command) => command.CommandText.Contains("FROM [Jobs] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal);
+
+    private sealed class ConcurrentAcquisitionInterceptor : DbCommandInterceptor
     {
-        public int SaveCount { get; private set; }
+        private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _arrivals;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (IsAcquisitionLock(command))
+            {
+                if (Interlocked.Increment(ref _arrivals) == 2)
+                {
+                    _ready.TrySetResult();
+                }
+
+                await _ready.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class ChangeVersionInterceptor(DbContextOptions<TaskForgeDbContext> options, Guid jobId) : DbCommandInterceptor
+    {
+        public int LockCount { get; private set; }
         public List<long> ObservedVersions { get; } = [];
 
-        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
         {
-            SaveCount++;
-            ObservedVersions.Add(eventData.Context!.Entry(eventData.Context.ChangeTracker.Entries<Job>().Single().Entity)
-                .Property(job => job.Version).OriginalValue);
-            await using TaskForgeDbContext competitor = new(options);
-            await competitor.Jobs.Where(job => job.Id == jobId)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
+            if (IsAcquisitionLock(command))
+            {
+                LockCount++;
+                await using TaskForgeDbContext competitor = new(options);
+                ObservedVersions.Add(await competitor.Jobs.Where(job => job.Id == jobId).Select(job => job.Version).SingleAsync(cancellationToken));
+                await competitor.Jobs.Where(job => job.Id == jobId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.Version, job => job.Version + 1), cancellationToken);
+            }
+
             return result;
         }
     }

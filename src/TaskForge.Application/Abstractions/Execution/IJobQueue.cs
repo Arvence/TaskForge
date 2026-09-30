@@ -5,7 +5,7 @@ namespace TaskForge.Application.Abstractions.Execution;
 
 public interface IJobQueue
 {
-    Task<JobExecutionAssignment?> TryDistributeAsync(string applicationId, string workerId, IReadOnlyCollection<string> supportedTypes, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken = default);
+    Task<JobExecutionAssignment?> TryDistributeAsync(string applicationId, string workerId, IReadOnlyCollection<string> supportedTypes, TimeSpan leaseGracePeriod, CancellationToken cancellationToken = default);
 
     Task<Job?> TryAcquireNextAsync(string workerId, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken = default);
 

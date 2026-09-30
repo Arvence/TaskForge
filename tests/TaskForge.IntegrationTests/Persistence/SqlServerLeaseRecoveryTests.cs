@@ -39,7 +39,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
             }
             else
             {
-                Assert.NotNull(await store.TryDistributeAsync("test-app", "lost-worker", ["external"], TimeSpan.FromSeconds(5), start));
+                Assert.NotNull(await store.DistributeAtAsync("test-app", "lost-worker", ["external"], TimeSpan.FromSeconds(5), start));
             }
 
             DateTimeOffset expired = start.AddSeconds(35);
@@ -68,7 +68,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
             {
                 Assert.Equal(JobStatus.DeadLettered, persisted.Status);
                 Assert.Null(persisted.NextRetryAtUtc);
-                Assert.Null(await store.TryDistributeAsync("test-app", "replacement", ["external"], TimeSpan.FromSeconds(5), expired.AddDays(1)));
+                Assert.Null(await store.DistributeAtAsync("test-app", "replacement", ["external"], TimeSpan.FromSeconds(5), expired.AddDays(1)));
             }
         }
     }
@@ -87,7 +87,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         }
         else
         {
-            await store.TryDistributeAsync("test-app", "lost-worker", ["external"], TimeSpan.FromSeconds(5), Now);
+            await store.DistributeAtAsync("test-app", "lost-worker", ["external"], TimeSpan.FromSeconds(5), Now);
         }
 
         context.ChangeTracker.Clear();
@@ -141,7 +141,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         DateTimeOffset start = DateTimeOffset.UtcNow.AddMinutes(-2);
         await SeedAsync(start: start);
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        JobExecutionAssignment assignment = (await Store(context).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), start))!;
+        JobExecutionAssignment assignment = (await Store(context).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), start))!;
         EfCoreExecutionStore execution = new(context, RetryPolicy);
         Assert.Equal(ExecutionResult.TimedOut, await execution.TransitionAsync(new("test-app", assignment.Job.Id, assignment.AttemptId, "worker"), new ExecutionReport.Timeout()));
         string snapshot = await SnapshotAsync();
@@ -157,7 +157,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         JobExecutionAssignment assignment;
         await using (TaskForgeDbContext setup = new(DatabaseOptions))
         {
-            assignment = (await Store(setup).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), start))!;
+            assignment = (await Store(setup).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), start))!;
         }
 
         await using TaskForgeDbContext recovery = new(DatabaseOptions);
@@ -183,7 +183,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
     {
         await SeedAsync();
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        await Store(context).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now);
+        await Store(context).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now);
         string snapshot = await SnapshotAsync();
         Assert.Equal(0, await Store(context).RecoverExpiredLeasesAsync(Now.AddSeconds(34)));
         Assert.Equal(snapshot, await SnapshotAsync());
@@ -217,7 +217,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
     {
         await SeedAsync();
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        JobExecutionAssignment assignment = (await Store(context).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now))!;
+        JobExecutionAssignment assignment = (await Store(context).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now))!;
         context.ChangeTracker.Clear();
         switch (inconsistency)
         {
@@ -251,7 +251,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         EfCoreJobStore store = new(context, RetryPolicy, logger);
         Assert.Equal(0, await store.RecoverExpiredLeasesAsync(Now.AddMinutes(1)));
         Assert.Contains(logger.Messages, message => message.Contains("inconsistent ownership"));
-        Assert.Null(await store.TryDistributeAsync("test-app", "replacement", ["external"], TimeSpan.FromSeconds(5), Now.AddMinutes(2)));
+        Assert.Null(await store.DistributeAtAsync("test-app", "replacement", ["external"], TimeSpan.FromSeconds(5), Now.AddMinutes(2)));
         Assert.Equal(snapshot, await SnapshotAsync());
     }
 
@@ -279,7 +279,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         await SeedAsync();
         await using (TaskForgeDbContext setup = new(DatabaseOptions))
         {
-            await Store(setup).TryDistributeAsync("test-app", "same-worker", ["external"], TimeSpan.FromSeconds(5), Now);
+            await Store(setup).DistributeAtAsync("test-app", "same-worker", ["external"], TimeSpan.FromSeconds(5), Now);
         }
 
         string? expected = null;
@@ -287,7 +287,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         {
             await using TaskForgeDbContext competitor = new(DatabaseOptions);
             Assert.Equal(1, await Store(competitor).RecoverExpiredLeasesAsync(Now.AddMinutes(1)));
-            Assert.NotNull(await Store(competitor).TryDistributeAsync("test-app", "same-worker", ["external"], TimeSpan.FromSeconds(5), Now.AddMinutes(1).AddSeconds(7)));
+            Assert.NotNull(await Store(competitor).DistributeAtAsync("test-app", "same-worker", ["external"], TimeSpan.FromSeconds(5), Now.AddMinutes(1).AddSeconds(7)));
             expected = await SnapshotAsync();
         });
         await using TaskForgeDbContext context = new(new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions).AddInterceptors(interceptor).Options);
@@ -303,7 +303,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         JobExecutionAssignment assignment;
         await using (TaskForgeDbContext setup = new(DatabaseOptions))
         {
-            assignment = (await Store(setup).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now))!;
+            assignment = (await Store(setup).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now))!;
         }
 
         string? expected = null;
@@ -326,7 +326,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         await SeedAsync();
         await using (TaskForgeDbContext setup = new(DatabaseOptions))
         {
-            await Store(setup).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now);
+            await Store(setup).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now);
         }
 
         BeforeRecoveryLock interceptor = new(async () =>
@@ -358,7 +358,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
             }
             else
             {
-                await Store(setup).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now);
+                await Store(setup).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromSeconds(5), Now);
             }
         }
 
@@ -381,7 +381,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         await SeedAsync(start: start);
         await using (TaskForgeDbContext setup = new(DatabaseOptions))
         {
-            await Store(setup).TryDistributeAsync("test-app", "lost-client", ["external"], TimeSpan.FromSeconds(5), start);
+            await Store(setup).DistributeAtAsync("test-app", "lost-client", ["external"], TimeSpan.FromSeconds(5), start);
         }
 
         await using (WebApplicationFactory<Program> first = CreateServer(start))

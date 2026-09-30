@@ -37,7 +37,7 @@ public sealed class JobDistributionService(IServiceScopeFactory scopeFactory, Ti
                 {
                     IJobQueue queue = scope.ServiceProvider.GetRequiredService<IJobQueue>();
                     assignment = await queue.TryDistributeAsync(normalizedApplicationId, workerId!, types,
-                        TimeSpan.FromSeconds(options.Value.LeaseGraceSeconds), timeProvider.GetUtcNow(), stopping.Token);
+                        TimeSpan.FromSeconds(options.Value.LeaseGraceSeconds), stopping.Token);
                 }
 
                 if (assignment is not null)

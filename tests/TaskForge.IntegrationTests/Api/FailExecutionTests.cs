@@ -146,7 +146,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
                 await Task.Delay(delay + TimeSpan.FromMilliseconds(50));
             }
 
-            current = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "new-worker", ["external-only"], TimeSpan.FromSeconds(30), await SqlNowAsync()))!;
+            current = (await new EfCoreJobStore(context).DistributeAtAsync("test-app", "new-worker", ["external-only"], TimeSpan.FromSeconds(30), await SqlNowAsync()))!;
             Assert.NotNull(current);
         }
 
@@ -256,7 +256,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
         job.Queue(now);
         EfCoreJobStore store = new(context);
         await store.AddAsync(job);
-        return (await store.TryDistributeAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), now))!;
+        return (await store.DistributeAtAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), now))!;
     }
 
     private async Task<DateTimeOffset> SqlNowAsync()

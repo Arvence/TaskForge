@@ -273,7 +273,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
             .UseSqlServer(ConnectionString, sql => sql.EnableRetryOnFailure()).AddInterceptors(failure).Options;
         await using TaskForgeDbContext context = new(options);
         InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(() => new EfCoreJobStore(context)
-            .TryDistributeAsync("test-app", "worker", ["remote-only"], TimeSpan.FromSeconds(30), DateTimeOffset.UtcNow));
+            .TryDistributeAsync("test-app", "worker", ["remote-only"], TimeSpan.FromSeconds(30)));
         Assert.Contains("commit could not be confirmed", error.Message);
         Assert.Equal(1, failure.Commits);
         await using TaskForgeDbContext read = new(DatabaseOptions);

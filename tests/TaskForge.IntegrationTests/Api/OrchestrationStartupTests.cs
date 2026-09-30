@@ -107,7 +107,7 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
         {
             EfCoreJobStore store = new(seed);
             await store.AddAsync(job);
-            Assert.NotNull(await store.TryDistributeAsync("client-app", "disconnected-client", ["send-email"], TimeSpan.FromSeconds(30), start));
+            Assert.NotNull(await store.DistributeAtAsync("client-app", "disconnected-client", ["send-email"], TimeSpan.FromSeconds(30), start));
         }
 
         await using WebApplicationFactory<Program> factory = CreateFactory();

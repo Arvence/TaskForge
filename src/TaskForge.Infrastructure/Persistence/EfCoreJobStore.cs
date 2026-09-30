@@ -21,7 +21,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
     private readonly JobRetryPolicy _retryPolicy = retryPolicy ?? new(Options.Create(new WorkerOptions()));
     private readonly ILogger<EfCoreJobStore> _logger = logger ?? NullLogger<EfCoreJobStore>.Instance;
 
-    public async Task<JobExecutionAssignment?> TryDistributeAsync(string applicationId, string workerId, IReadOnlyCollection<string> supportedTypes, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken = default)
+    public async Task<JobExecutionAssignment?> TryDistributeAsync(string applicationId, string workerId, IReadOnlyCollection<string> supportedTypes, TimeSpan leaseGracePeriod, CancellationToken cancellationToken = default)
     {
         applicationId = JobApplicationId.Normalize(applicationId);
         ArgumentException.ThrowIfNullOrWhiteSpace(workerId);
@@ -50,7 +50,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
         try
         {
             return await dbContext.Database.CreateExecutionStrategy().ExecuteAsync(
-                token => TryDistributeCoreAsync(applicationId, workerId, types, leaseGracePeriod, now, token), cancellationToken);
+                token => TryDistributeCoreAsync(applicationId, workerId, types, leaseGracePeriod, token), cancellationToken);
         }
         catch (Exception exception) when (cancellationToken.IsCancellationRequested && exception is SqlException or DbUpdateException)
         {
@@ -58,7 +58,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
         }
     }
 
-    private async Task<JobExecutionAssignment?> TryDistributeCoreAsync(string applicationId, string workerId, string[] types, TimeSpan leaseGracePeriod, DateTimeOffset now, CancellationToken cancellationToken)
+    private async Task<JobExecutionAssignment?> TryDistributeCoreAsync(string applicationId, string workerId, string[] types, TimeSpan leaseGracePeriod, CancellationToken cancellationToken)
     {
         for (int acquisition = 0; acquisition < MaximumDistributionAttempts; acquisition++)
         {
@@ -68,6 +68,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
             bool commitStarted = false;
             try
             {
+                DateTimeOffset now = await GetSqlUtcNowAsync(cancellationToken);
                 Job? job = await dbContext.Jobs.AsNoTracking()
                     .Where(candidate => candidate.ApplicationId == applicationId && types.Contains(candidate.Type))
                     .Where(candidate => candidate.Status == JobStatus.Queued
@@ -82,13 +83,27 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
                     return null;
                 }
 
+                long expectedVersion = job.Version;
+                job = await dbContext.Jobs
+                    .FromSqlInterpolated($"SELECT * FROM [Jobs] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {job.Id}")
+                    .AsNoTracking().SingleOrDefaultAsync(cancellationToken);
+                if (job is null || job.Version != expectedVersion)
+                {
+                    continue;
+                }
+
                 int lastNumber = await dbContext.JobAttempts
                     .Where(attempt => attempt.JobId == job.Id)
                     .Select(attempt => (int?)attempt.AttemptNumber)
                     .MaxAsync(cancellationToken) ?? 0;
+                now = await GetSqlUtcNowAsync(cancellationToken);
+                if (job.Status == JobStatus.Retrying && job.NextRetryAtUtc > now)
+                {
+                    continue;
+                }
+
                 JobAttempt attempt = new(Guid.NewGuid(), job.Id, checked(lastNumber + 1), workerId, now);
                 JobExecutionAssignment assignment = new(job, attempt);
-                long expectedVersion = job.Version;
                 if (job.Status == JobStatus.Retrying)
                 {
                     job.QueueRetry(now);
@@ -128,6 +143,9 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
 
         return null;
     }
+
+    private Task<DateTimeOffset> GetSqlUtcNowAsync(CancellationToken cancellationToken) =>
+        dbContext.Database.SqlQuery<DateTimeOffset>($"SELECT TODATETIMEOFFSET(SYSUTCDATETIME(), '+00:00') AS [Value]").SingleAsync(cancellationToken);
 
     private static bool IsDistributionConflict(Exception exception) =>
         exception is DbUpdateConcurrencyException

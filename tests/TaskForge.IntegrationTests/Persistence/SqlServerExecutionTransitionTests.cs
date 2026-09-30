@@ -18,7 +18,7 @@ namespace TaskForge.IntegrationTests.Persistence;
 [Collection("SQL Server")]
 public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) : SqlServerTest(fixture)
 {
-    private DbContextOptions<TaskForgeDbContext> ExecutionOptions => new DbContextOptionsBuilder<TaskForgeDbContext>()
+    private DbContextOptions<TaskForgeDbContext> ExecutionOptions => new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions)
         .UseSqlServer(ConnectionString, options => options.EnableRetryOnFailure()).Options;
 
     [Fact]
@@ -131,7 +131,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         {
             DateTimeOffset recoveredAt = await SqlNowAsync(context);
             Assert.Equal(1, await new EfCoreJobStore(context).RecoverExpiredLeasesAsync(recoveredAt));
-            current = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), recoveredAt.AddSeconds(5)))!;
+            current = (await new EfCoreJobStore(context).DistributeAtAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), recoveredAt.AddSeconds(5)))!;
         }
 
         Assert.Equal(ExecutionResult.Stale, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Complete("\"old report\"")));
@@ -411,7 +411,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
                 Assert.Equal(JobStatus.Retrying, job.Status);
                 Assert.Equal(now.AddSeconds(delays[failure]), job.NextRetryAtUtc);
                 now = job.NextRetryAtUtc!.Value;
-                assignment = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), now))!;
+                assignment = (await new EfCoreJobStore(context).DistributeAtAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), now))!;
                 Assert.NotNull(assignment);
                 now = now.AddSeconds(1);
             }
@@ -432,7 +432,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         await using TaskForgeDbContext context = new(ExecutionOptions);
         Assert.Equal(ExecutionResult.Accepted, await Store(context).TransitionAsync(Identity(old), new ExecutionReport.Fail("Unknown", "Failed.")));
         Job job = await context.Jobs.AsNoTracking().SingleAsync();
-        JobExecutionAssignment current = (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "new-worker", ["example"], TimeSpan.FromSeconds(30), job.NextRetryAtUtc!.Value))!;
+        JobExecutionAssignment current = (await new EfCoreJobStore(context).DistributeAtAsync("test-app", "new-worker", ["example"], TimeSpan.FromSeconds(30), job.NextRetryAtUtc!.Value))!;
         Assert.NotNull(current);
         string before = JsonSerializer.Serialize(await context.Jobs.AsNoTracking().SingleAsync());
         string history = JsonSerializer.Serialize(await context.JobAttempts.AsNoTracking().OrderBy(attempt => attempt.AttemptNumber).ToArrayAsync());
@@ -525,7 +525,7 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
         Job job = new(Guid.NewGuid(), "test-app", "example", "{}", JobPriority.Normal, maxRetries, timeoutSeconds, start);
         job.Queue(start);
         await new EfCoreJobStore(context).AddAsync(job);
-        return (await new EfCoreJobStore(context).TryDistributeAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), start))!;
+        return (await new EfCoreJobStore(context).DistributeAtAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), start))!;
     }
 
     private static Task<DateTimeOffset> SqlNowAsync(TaskForgeDbContext context) =>

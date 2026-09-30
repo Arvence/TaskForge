@@ -16,6 +16,7 @@ public abstract class SqlServerTest : IAsyncLifetime
         }.ConnectionString;
         DatabaseOptions = new DbContextOptionsBuilder<TaskForgeDbContext>()
             .UseSqlServer(ConnectionString)
+            .AddInterceptors(ExecutionAcquisitionTestExtensions.Clock)
             .Options;
     }
 

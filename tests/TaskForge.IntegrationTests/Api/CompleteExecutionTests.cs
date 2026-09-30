@@ -186,7 +186,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
             EfCoreJobStore store = new(context);
             DateTimeOffset now = DateTimeOffset.UtcNow;
             Assert.Equal(1, await store.RecoverExpiredLeasesAsync(now));
-            JobExecutionAssignment? current = await store.TryDistributeAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), now.AddSeconds(5));
+            JobExecutionAssignment? current = await store.DistributeAtAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), now.AddSeconds(5));
             Assert.NotNull(current);
             Assert.NotEqual(old.AttemptId, current.AttemptId);
         }
@@ -244,7 +244,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
         job.Queue(start);
         EfCoreJobStore store = new(context);
         await store.AddAsync(job);
-        return (await store.TryDistributeAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), start))!;
+        return (await store.DistributeAtAsync("test-app", "worker-01", ["external-only"], TimeSpan.FromSeconds(30), start))!;
     }
 
     private async Task<string> SnapshotAsync()

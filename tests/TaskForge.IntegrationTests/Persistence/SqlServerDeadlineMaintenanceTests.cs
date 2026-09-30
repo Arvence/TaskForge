@@ -135,7 +135,7 @@ public sealed class SqlServerDeadlineMaintenanceTests(SqlServerFixture fixture) 
                 if (operation == "redistribute")
                 {
                     await using TaskForgeDbContext acquire = new(DatabaseOptions);
-                    JobExecutionAssignment next = (await new EfCoreJobStore(acquire).TryDistributeAsync("test-app", "worker", ["external"], TimeSpan.FromHours(1), assignment.DeadlineAtUtc.AddSeconds(10)))!;
+                    JobExecutionAssignment next = (await new EfCoreJobStore(acquire).DistributeAtAsync("test-app", "worker", ["external"], TimeSpan.FromHours(1), assignment.DeadlineAtUtc.AddSeconds(10)))!;
                     Assert.NotEqual(assignment.AttemptId, next.AttemptId);
                 }
             }
