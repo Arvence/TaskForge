@@ -12,8 +12,6 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
     public DbSet<Job> Jobs => Set<Job>();
     public DbSet<JobAttempt> JobAttempts => Set<JobAttempt>();
     public DbSet<WorkerState> Workers => Set<WorkerState>();
-    internal DbSet<WorkerSettingsRecord> WorkerSettings =>
-        Set<WorkerSettingsRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

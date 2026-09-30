@@ -11,10 +11,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 using TaskForge.Api.Jobs;
-using TaskForge.Application.Abstractions.Persistence;
 using TaskForge.Application.Jobs;
 using TaskForge.Application.Workers;
 using TaskForge.Domain.Jobs;
+using TaskForge.Domain.Workers;
 using TaskForge.Infrastructure.Persistence;
 
 namespace TaskForge.IntegrationTests.Api;
@@ -26,7 +26,12 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
     public async Task Startup_ignores_legacy_execution_settings_and_registers_only_orchestration()
     {
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        await new EfCoreWorkerSettingsStore(context).SetDesiredWorkerCountAsync(8, DateTimeOffset.UtcNow);
+        DateTimeOffset legacyTime = DateTimeOffset.UtcNow.AddDays(-1);
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO [WorkerSettings] ([Id], [DesiredWorkerCount], [UpdatedAtUtc]) VALUES (1, 8, {legacyTime});
+            INSERT INTO [Workers] ([Id], [Status], [StartedAtUtc], [LastHeartbeatAtUtc], [StoppedAtUtc], [Version])
+            VALUES (N'retired-worker', N'Offline', {legacyTime}, {legacyTime}, {legacyTime}, 4);
+            """);
         await using WebApplicationFactory<Program> factory = CreateFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("Worker:Count", "not-an-integer");
@@ -36,11 +41,10 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
         await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
         IServiceProvider services = scope.ServiceProvider;
 
-        Assert.Null(services.GetService<IWorkerSettingsStore>());
         Assert.NotNull(services.GetRequiredService<JobExecutionService>());
         Assert.NotNull(services.GetRequiredService<JobDistributionService>());
         IHostedService[] hosted = services.GetServices<IHostedService>().ToArray();
-        Assert.Single(hosted.OfType<JobMaintenanceService>());
+        Assert.IsType<JobMaintenanceService>(Assert.Single(hosted, service => service.GetType().Assembly == typeof(JobMaintenanceService).Assembly));
         WorkerOptions options = services.GetRequiredService<IOptions<WorkerOptions>>().Value;
         Assert.Equal(50, options.PollIntervalMilliseconds);
         Assert.Equal(5, options.RetryDelaySeconds);
@@ -50,7 +54,17 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
         using HttpResponseMessage readiness = await client.GetAsync("/api/ready");
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
         Assert.Equal(HttpStatusCode.OK, readiness.StatusCode);
-        Assert.Equal(8, await new EfCoreWorkerSettingsStore(context).GetDesiredWorkerCountAsync());
+        Assert.False(context.Database.HasPendingModelChanges());
+        Assert.Equal(8, await context.Database.SqlQuery<int>($"SELECT [DesiredWorkerCount] AS [Value] FROM [WorkerSettings] WHERE [Id] = 1").SingleAsync());
+        Assert.Equal(legacyTime, await context.Database.SqlQuery<DateTimeOffset>($"SELECT [UpdatedAtUtc] AS [Value] FROM [WorkerSettings] WHERE [Id] = 1").SingleAsync());
+        WorkerState legacyWorker = await context.Workers.SingleAsync();
+        Assert.Equal("retired-worker", legacyWorker.Id);
+        Assert.Equal(WorkerStatus.Offline, legacyWorker.Status);
+        Assert.Equal(legacyTime, legacyWorker.StartedAtUtc);
+        Assert.Equal(legacyTime, legacyWorker.LastHeartbeatAtUtc);
+        Assert.Equal(legacyTime, legacyWorker.StoppedAtUtc);
+        Assert.Null(legacyWorker.CurrentJobId);
+        Assert.Equal(4, legacyWorker.Version);
     }
 
     [Theory]
@@ -146,7 +160,7 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
         Assert.Equal(410, problem.GetProperty("status").GetInt32());
         Assert.Contains("retired", problem.GetProperty("detail").GetString());
         await using TaskForgeDbContext context = new(DatabaseOptions);
-        Assert.Null(await new EfCoreWorkerSettingsStore(context).GetDesiredWorkerCountAsync());
+        Assert.Equal(0, await context.Database.SqlQuery<int>($"SELECT COUNT(*) AS [Value] FROM [WorkerSettings]").SingleAsync());
         using HttpResponseMessage openApi = await client.GetAsync("/openapi/v1.json");
         JsonElement paths = (await openApi.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("paths");
         Assert.True(paths.GetProperty(route).GetProperty(method.ToLowerInvariant()).GetProperty("responses").TryGetProperty("410", out _));
