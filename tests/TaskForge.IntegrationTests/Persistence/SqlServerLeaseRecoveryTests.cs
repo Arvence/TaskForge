@@ -35,7 +35,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
             EfCoreJobStore store = Store(context);
             if (legacy)
             {
-                Assert.NotNull(await store.TryAcquireNextAsync("lost-worker", TimeSpan.FromSeconds(5), start));
+                await SeedLegacyOwnershipAsync(context, "lost-worker", start);
             }
             else
             {
@@ -83,7 +83,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         EfCoreJobStore store = Store(context);
         if (legacy)
         {
-            await store.TryAcquireNextAsync("lost-worker", TimeSpan.FromSeconds(5), Now);
+            await SeedLegacyOwnershipAsync(context, "lost-worker", Now);
         }
         else
         {
@@ -115,17 +115,16 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         Job job = await SeedAsync();
         await using TaskForgeDbContext context = new(DatabaseOptions);
         EfCoreJobStore store = Store(context);
-        Job acquired = (await store.TryAcquireNextAsync("legacy-worker", TimeSpan.FromSeconds(5), Now))!;
-        JobAttempt attempt = (await store.TryStartAttemptAsync(acquired, Now.AddSeconds(1)))!;
+        Job acquired = await SeedLegacyOwnershipAsync(context, "legacy-worker", Now);
+        JobAttempt attempt = new(Guid.NewGuid(), acquired.Id, 1, "legacy-worker", Now.AddSeconds(1));
         attempt.Finish(outcome, Now.AddSeconds(31), "OriginalError", "Original history.");
-        await store.FinishAttemptAsync(attempt);
+        context.JobAttempts.Add(attempt);
         if (cancel)
         {
-            long version = acquired.Version;
             acquired.RequestCancellation(Now.AddSeconds(32));
-            await store.TryUpdateAsync(acquired, version);
         }
 
+        await context.SaveChangesAsync();
         string history = JsonSerializer.Serialize(await store.GetAttemptsAsync(job.Id));
         Assert.Equal(1, await store.RecoverExpiredLeasesAsync(Now.AddMinutes(1)));
         Assert.Equal(history, JsonSerializer.Serialize(await store.GetAttemptsAsync(job.Id)));
@@ -195,8 +194,9 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         await SeedAsync();
         await using TaskForgeDbContext context = new(DatabaseOptions);
         EfCoreJobStore store = Store(context);
-        Job job = (await store.TryAcquireNextAsync("legacy-worker", TimeSpan.FromSeconds(5), Now))!;
-        Assert.NotNull(await store.TryStartAttemptAsync(job, Now.AddSeconds(20)));
+        Job job = await SeedLegacyOwnershipAsync(context, "legacy-worker", Now);
+        context.JobAttempts.Add(new(Guid.NewGuid(), job.Id, 1, "legacy-worker", Now.AddSeconds(20)));
+        await context.SaveChangesAsync();
         string snapshot = await SnapshotAsync();
         Assert.Equal(0, await store.RecoverExpiredLeasesAsync(Now.AddSeconds(35)));
         Assert.Equal(snapshot, await SnapshotAsync());
@@ -242,7 +242,8 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
                 break;
             case "succeeded":
                 assignment.Attempt.Finish(JobAttemptOutcome.Succeeded, Now.AddSeconds(1));
-                await Store(context).FinishAttemptAsync(assignment.Attempt);
+                context.JobAttempts.Update(assignment.Attempt);
+                await context.SaveChangesAsync();
                 break;
         }
 
@@ -261,7 +262,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         await SeedAsync();
         await using (TaskForgeDbContext setup = new(DatabaseOptions))
         {
-            await Store(setup).TryAcquireNextAsync("legacy-worker", TimeSpan.FromSeconds(5), Now);
+            await SeedLegacyOwnershipAsync(setup, "legacy-worker", Now);
         }
 
         await using TaskForgeDbContext first = new(DatabaseOptions);
@@ -311,7 +312,8 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         {
             await using TaskForgeDbContext competitor = new(DatabaseOptions);
             assignment.Attempt.Finish(JobAttemptOutcome.Succeeded, Now.AddSeconds(1));
-            await Store(competitor).FinishAttemptAsync(assignment.Attempt);
+            competitor.JobAttempts.Update(assignment.Attempt);
+            await competitor.SaveChangesAsync();
             expected = await SnapshotAsync();
         });
         await using TaskForgeDbContext context = new(new DbContextOptionsBuilder<TaskForgeDbContext>(DatabaseOptions).AddInterceptors(interceptor).Options);
@@ -354,7 +356,7 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
         {
             if (legacy)
             {
-                await Store(setup).TryAcquireNextAsync("worker", TimeSpan.FromSeconds(5), Now);
+                await SeedLegacyOwnershipAsync(setup, "worker", Now);
             }
             else
             {
@@ -439,6 +441,19 @@ public sealed class SqlServerLeaseRecoveryTests(SqlServerFixture fixture) : SqlS
     {
         await using TaskForgeDbContext context = new(DatabaseOptions);
         return JsonSerializer.Serialize(new { Jobs = await context.Jobs.OrderBy(job => job.Id).ToListAsync(), Attempts = await context.JobAttempts.OrderBy(attempt => attempt.AttemptNumber).ToListAsync() });
+    }
+
+    private static async Task<Job> SeedLegacyOwnershipAsync(TaskForgeDbContext context, string workerId, DateTimeOffset now)
+    {
+        Job job = await context.Jobs.SingleAsync();
+        if (job.Status == JobStatus.Retrying)
+        {
+            job.QueueRetry(now);
+        }
+
+        job.StartProcessing(workerId, now.AddSeconds(job.TimeoutSeconds + 5), now);
+        await context.SaveChangesAsync();
+        return job;
     }
 
     private static EfCoreJobStore Store(TaskForgeDbContext context) => new(context, RetryPolicy);

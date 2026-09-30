@@ -105,42 +105,6 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
     }
 
     [Fact]
-    public async Task Queued_job_can_only_be_acquired_once_by_competing_workers()
-    {
-        DbContextOptions<TaskForgeDbContext> options = DatabaseOptions;
-
-        Job job = CreateJob(
-            Guid.NewGuid(),
-            new DateTimeOffset(2026, 7, 20, 12, 0, 0, TimeSpan.Zero));
-
-        await using (TaskForgeDbContext setupContext = new(options))
-        {
-            await new EfCoreJobStore(setupContext).AddAsync(job);
-        }
-
-        DateTimeOffset now = new(2026, 7, 20, 12, 1, 0, TimeSpan.Zero);
-        options = new DbContextOptionsBuilder<TaskForgeDbContext>(options)
-            .AddInterceptors(new ConcurrentSaveInterceptor())
-            .Options;
-        await using TaskForgeDbContext firstContext = new(options);
-        await using TaskForgeDbContext secondContext = new(options);
-        EfCoreJobStore firstStore = new(firstContext);
-        EfCoreJobStore secondStore = new(secondContext);
-
-        Task<Job?> first = firstStore.TryAcquireNextAsync("worker-01", TimeSpan.FromSeconds(30), now);
-        Task<Job?> second = secondStore.TryAcquireNextAsync("worker-02", TimeSpan.FromSeconds(30), now);
-        Job?[] results = await Task.WhenAll(first, second);
-
-        Job acquired = Assert.Single(results.OfType<Job>());
-        Assert.Single(results, result => result is null);
-        Assert.Equal(JobStatus.Processing, acquired.Status);
-        await using TaskForgeDbContext readContext = new(DatabaseOptions);
-        Job persisted = await readContext.Jobs.AsNoTracking().SingleAsync();
-        Assert.Equal(acquired.OwningWorkerId, persisted.OwningWorkerId);
-        Assert.Equal(job.Version + 1, persisted.Version);
-    }
-
-    [Fact]
     public async Task Stale_job_update_is_rejected()
     {
         DbContextOptions<TaskForgeDbContext> options = DatabaseOptions;
@@ -156,24 +120,15 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
 
         await using TaskForgeDbContext firstContext = new(options);
         await using TaskForgeDbContext secondContext = new(options);
-        EfCoreJobStore firstStore = new(firstContext);
-        EfCoreJobStore secondStore = new(secondContext);
-        Job firstCopy = (await firstStore.FindAsync(job.Id))!;
-        Job staleCopy = (await secondStore.FindAsync(job.Id))!;
+        Job firstCopy = await firstContext.Jobs.SingleAsync();
+        Job staleCopy = await secondContext.Jobs.SingleAsync();
         long expectedVersion = firstCopy.Version;
         DateTimeOffset now = new(2026, 7, 20, 12, 1, 0, TimeSpan.Zero);
         firstCopy.StartProcessing("worker-01", now.AddMinutes(1), now);
         staleCopy.StartProcessing("worker-02", now.AddMinutes(1), now);
 
-        bool firstUpdated = await firstStore.TryUpdateAsync(
-            firstCopy,
-            expectedVersion);
-        bool staleUpdated = await secondStore.TryUpdateAsync(
-            staleCopy,
-            expectedVersion);
-
-        Assert.True(firstUpdated);
-        Assert.False(staleUpdated);
+        await firstContext.SaveChangesAsync();
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => secondContext.SaveChangesAsync());
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
         Job persisted = await readContext.Jobs.AsNoTracking().SingleAsync();
         Assert.Equal("worker-01", persisted.OwningWorkerId);
@@ -208,14 +163,11 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
 
         await using TaskForgeDbContext workerContext = new(options);
         EfCoreJobStore store = new(workerContext);
-        Job? acquired = await store.TryAcquireNextAsync(
-            "worker-01",
-            TimeSpan.FromSeconds(30),
-            now);
+        JobExecutionAssignment? assignment = await store.DistributeAtAsync("test-app", "worker-01", ["example", "generate-report"], TimeSpan.FromSeconds(30), now);
 
-        Assert.NotNull(acquired);
-        Assert.Equal(highPriority.Id, acquired.Id);
-        Assert.Equal(JobStatus.Processing, acquired.Status);
+        Assert.NotNull(assignment);
+        Assert.Equal(highPriority.Id, assignment.Job.Id);
+        Assert.Equal(JobStatus.Processing, assignment.Job.Status);
     }
 
     [Fact]
@@ -372,16 +324,16 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         foreach (Guid expectedId in new[] { highPriority.Id, earlierRetry.Id, laterRetry.Id, queued.Id })
         {
             await using TaskForgeDbContext workerContext = new(DatabaseOptions);
-            Job? acquired = await new EfCoreJobStore(workerContext).TryAcquireNextAsync("worker-01", TimeSpan.FromSeconds(30), now);
-            Assert.NotNull(acquired);
-            Assert.Equal(expectedId, acquired.Id);
-            Assert.Equal(JobStatus.Processing, acquired.Status);
-            Assert.Null(acquired.NextRetryAtUtc);
+            JobExecutionAssignment? assignment = await new EfCoreJobStore(workerContext).DistributeAtAsync("test-app", "worker-01", ["example", "generate-report"], TimeSpan.FromSeconds(30), now);
+            Assert.NotNull(assignment);
+            Assert.Equal(expectedId, assignment.Job.Id);
+            Assert.Equal(JobStatus.Processing, assignment.Job.Status);
+            Assert.Null(assignment.Job.NextRetryAtUtc);
         }
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);
         EfCoreJobStore store = new(readContext);
-        Assert.Null(await store.TryAcquireNextAsync("worker-02", TimeSpan.FromSeconds(30), now));
+        Assert.Null(await store.DistributeAtAsync("test-app", "worker-02", ["example", "generate-report"], TimeSpan.FromSeconds(30), now));
         Job? remaining = await store.FindAsync(future.Id);
         Assert.NotNull(remaining);
         Assert.Equal(JobStatus.Retrying, remaining.Status);
@@ -429,11 +381,11 @@ public sealed class SqlServerJobStoreTests(SqlServerFixture fixture) : SqlServer
         Assert.Equal(active.Version, persistedActive.Version);
         Assert.Equal("active-worker", persistedActive.OwningWorkerId);
         Assert.Equal(active.LeaseExpiresAtUtc, persistedActive.LeaseExpiresAtUtc);
-        Assert.Null(await readStore.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(30), now));
-        Job? reacquired = await readStore.TryAcquireNextAsync("replacement-worker", TimeSpan.FromSeconds(30), now.AddSeconds(5));
+        Assert.Null(await readStore.DistributeAtAsync("test-app", "replacement-worker", ["generate-report"], TimeSpan.FromSeconds(30), now));
+        JobExecutionAssignment? reacquired = await readStore.DistributeAtAsync("test-app", "replacement-worker", ["generate-report"], TimeSpan.FromSeconds(30), now.AddSeconds(5));
         Assert.NotNull(reacquired);
-        Assert.Equal(expired.Id, reacquired.Id);
-        Assert.Equal("replacement-worker", reacquired.OwningWorkerId);
+        Assert.Equal(expired.Id, reacquired.Job.Id);
+        Assert.Equal("replacement-worker", reacquired.Job.OwningWorkerId);
     }
 
     private static Job CreateRetryJob(DateTimeOffset createdAt, DateTimeOffset dueAt, JobPriority priority)

@@ -366,11 +366,5 @@ public sealed class JobManagerTests
             Task.FromResult(
                 Jobs.SingleOrDefault(
                     job => job.ApplicationId == applicationId && job.IdempotencyKey == idempotencyKey));
-
-        public Task<bool> TryUpdateAsync(
-            Job job,
-            long expectedVersion,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(true);
     }
 }

@@ -134,12 +134,10 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
     {
         await SeedAsync(CreateJob());
         await using TaskForgeDbContext context = new(DistributionOptions);
-        EfCoreJobStore store = new(context);
         JobExecutionAssignment first = (await DistributeAsync(context))!;
-        long version = first.Job.Version;
         first.Attempt.Finish(JobAttemptOutcome.Failed, Now.AddSeconds(1));
         first.Job.Fail("Retryable failure.", Now.AddSeconds(2), Now.AddSeconds(1));
-        Assert.True(await store.TryUpdateAsync(first.Job, version, CancellationToken.None, first.Attempt));
+        await context.SaveChangesAsync();
 
         JobExecutionAssignment second = (await DistributeAsync(context, now: Now.AddSeconds(2)))!;
         Assert.Equal(2, second.Attempt.AttemptNumber);
