@@ -16,10 +16,6 @@ Console.CancelKeyPress += (_, eventArgs) =>
 
 try
 {
-    string settingsPath = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
-    DebugSettings settings = await DebugSettings.LoadAsync(
-        settingsPath,
-        shutdown.Token);
     DebugCommand command = DebugCommand.Parse(args);
 
     if (command.Kind == DebugCommandKind.Help)
@@ -27,6 +23,9 @@ try
         DebugConsole.WriteHelp();
         return 0;
     }
+
+    string settingsPath = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
+    DebugSettings settings = await DebugSettings.LoadAsync(settingsPath, shutdown.Token);
 
     using HttpClient httpClient = new()
     {
@@ -43,27 +42,17 @@ try
     {
         JobFilters filters = command.Filters
             ?? throw new InvalidOperationException("Job filters were not provided.");
-        JobPageResponse jobs = await client.GetJobsAsync(
-            filters,
-            pageSize: 20,
-            shutdown.Token);
+        JobPageResponse jobs = await client.GetJobsAsync(filters, pageSize: 20, shutdown.Token);
         console.WriteJobList(jobs, filters);
         return 0;
     }
 
     Task<HealthResponse> healthTask = client.GetHealthAsync(shutdown.Token);
-    Task<WorkerManagerSnapshot> workersTask = client.GetWorkersAsync(shutdown.Token);
-    Task<JobPageResponse> jobsTask = client.GetJobsAsync(
-        JobFilters.Empty,
-        pageSize: 5,
-        shutdown.Token);
+    Task<JobStatisticsResponse> statisticsTask = client.GetStatisticsAsync(shutdown.Token);
+    Task<JobPageResponse> jobsTask = client.GetJobsAsync(JobFilters.Empty, pageSize: 5, shutdown.Token);
 
-    await Task.WhenAll(healthTask, workersTask, jobsTask);
-    console.WriteDashboard(
-        settings,
-        await healthTask,
-        await workersTask,
-        await jobsTask);
+    await Task.WhenAll(healthTask, statisticsTask, jobsTask);
+    console.WriteDashboard(settings, await healthTask, await statisticsTask, await jobsTask);
     return 0;
 }
 catch (TaskCanceledException) when (!shutdown.IsCancellationRequested)
@@ -79,7 +68,7 @@ catch (OperationCanceledException)
 catch (HttpRequestException exception)
 {
     Console.Error.WriteLine($"Could not connect to TaskForge: {exception.Message}");
-    Console.Error.WriteLine("Start the API with: dotnet run --project src/TaskForge.Api");
+    Console.Error.WriteLine("Start TaskForge with ./setup.ps1 and check apiBaseUrl in debugsettings.json.");
     return 1;
 }
 catch (TaskForgeApiException exception)

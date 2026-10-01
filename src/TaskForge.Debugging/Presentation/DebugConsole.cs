@@ -5,11 +5,7 @@ namespace TaskForge.Debugging.Presentation;
 
 internal sealed class DebugConsole(bool useColor)
 {
-    public void WriteDashboard(
-        DebugSettings settings,
-        HealthResponse health,
-        WorkerManagerSnapshot workers,
-        JobPageResponse jobs)
+    public void WriteDashboard(DebugSettings settings, HealthResponse health, JobStatisticsResponse statistics, JobPageResponse jobs)
     {
         WriteTitle("TASKFORGE DEBUG DASHBOARD");
         Console.WriteLine($"{settings.Environment} | {settings.GetApiBaseUri()}");
@@ -21,12 +17,17 @@ internal sealed class DebugConsole(bool useColor)
         WriteField("API time", FormatTimestamp(health.TimestampUtc));
 
         Console.WriteLine();
-        WriteSection("WORKERS");
-        WriteField(
-            "Count",
-            $"{workers.ActiveWorkerCount} active / "
-            + $"{workers.DesiredWorkerCount} desired");
-        WriteWorkers(workers.Workers);
+        WriteSection("JOB STATISTICS (ALL APPLICATIONS)");
+        WriteField("Total jobs", statistics.TotalJobs.ToString());
+        JobStatusCounts counts = statistics.CountsByStatus;
+        WriteField("Pending", counts.Pending.ToString());
+        WriteField("Queued", counts.Queued.ToString());
+        WriteField("Processing", counts.Processing.ToString());
+        WriteField("Retrying", counts.Retrying.ToString());
+        WriteField("Completed", counts.Completed.ToString());
+        WriteField("DeadLettered", counts.DeadLettered.ToString());
+        WriteField("Cancelled", counts.Cancelled.ToString());
+        WriteField("Success rate", statistics.SuccessRatePercent is decimal rate ? $"{rate:0.##}%" : "N/A");
 
         Console.WriteLine();
         WriteSection("RECENT JOBS");
@@ -37,6 +38,7 @@ internal sealed class DebugConsole(bool useColor)
     {
         WriteTitle("TASKFORGE JOBS");
         List<string> activeFilters = [];
+        AddFilter(activeFilters, "applicationId", filters.ApplicationId);
         AddFilter(activeFilters, "status", filters.Status);
         AddFilter(activeFilters, "type", filters.Type);
         AddFilter(activeFilters, "priority", filters.Priority);
@@ -53,34 +55,17 @@ internal sealed class DebugConsole(bool useColor)
         Console.WriteLine("TaskForge.Debugging");
         Console.WriteLine();
         Console.WriteLine("  dashboard");
-        Console.WriteLine("      Show API health, workers, and the five newest jobs.");
+        Console.WriteLine("      Show API health, global job statistics, and the five newest jobs.");
         Console.WriteLine();
-        Console.WriteLine("  jobs [--status STATUS] [--type TYPE] [--priority PRIORITY]");
-        Console.WriteLine("      List jobs using any combination of filters.");
+        Console.WriteLine("  jobs [--application-id ID] [--status STATUS] [--type TYPE] [--priority PRIORITY]");
+        Console.WriteLine("      List up to 20 jobs using any combination of filters.");
+        Console.WriteLine();
+        Console.WriteLine("This console only reads server state; business execution belongs to external clients.");
         Console.WriteLine();
         Console.WriteLine("Examples:");
         Console.WriteLine("  dotnet run --project src/TaskForge.Debugging");
-        Console.WriteLine("  dotnet run --project src/TaskForge.Debugging -- jobs --status Retrying");
+        Console.WriteLine("  dotnet run --project src/TaskForge.Debugging -- jobs --application-id example-app --status Retrying");
         Console.WriteLine("  dotnet run --project src/TaskForge.Debugging -- jobs --type http-request --priority High");
-    }
-
-    private void WriteWorkers(IReadOnlyList<WorkerSnapshot> workers)
-    {
-        if (workers.Count == 0)
-        {
-            Console.WriteLine("  No active workers. Job processing is paused.");
-            return;
-        }
-
-        Console.WriteLine("  WORKER          STATUS      CURRENT JOB                           STARTED (UTC)");
-        foreach (WorkerSnapshot worker in workers)
-        {
-            Console.Write($"  {Trim(worker.Id, 14),-14}  ");
-            WriteStatus(worker.Status, 10);
-            Console.WriteLine(
-                $"  {worker.CurrentJobId?.ToString() ?? "-",-36}  "
-                + $"{worker.StartedAtUtc:yyyy-MM-dd HH:mm:ss}");
-        }
     }
 
     private void WriteJobs(JobPageResponse jobs)
@@ -91,13 +76,13 @@ internal sealed class DebugConsole(bool useColor)
             return;
         }
 
-        Console.WriteLine("  JOB ID                                STATUS        PRIORITY  TYPE               RETRIES  UPDATED (UTC)");
+        Console.WriteLine("  JOB ID                                STATUS        PRIORITY  APPLICATION        TYPE               RETRIES  UPDATED (UTC)");
         foreach (JobSummary job in jobs.Items)
         {
             Console.Write($"  {job.Id}  ");
             WriteStatus(job.Status, 12);
             Console.WriteLine(
-                $"  {job.Priority,-8}  {Trim(job.Type, 17),-17}  "
+                $"  {job.Priority,-8}  {Trim(job.ApplicationId, 17),-17}  {Trim(job.Type, 17),-17}  "
                 + $"{job.RetryCount}/{job.MaxRetries,-5}  "
                 + $"{job.UpdatedAtUtc:yyyy-MM-dd HH:mm:ss}");
         }
@@ -118,12 +103,9 @@ internal sealed class DebugConsole(bool useColor)
         Console.WriteLine();
     }
 
-    private void WriteField(
-        string name,
-        string value,
-        ConsoleColor? color = null)
+    private void WriteField(string name, string value, ConsoleColor? color = null)
     {
-        Console.Write($"  {name,-10} ");
+        Console.Write($"  {name,-14} ");
         if (color is ConsoleColor valueColor)
         {
             WriteColored(value, valueColor);
@@ -160,12 +142,12 @@ internal sealed class DebugConsole(bool useColor)
     {
         return status switch
         {
-            "Healthy" or "Completed" or "Idle" => ConsoleColor.Green,
-            "Pending" or "Queued" or "Starting" => ConsoleColor.Cyan,
-            "Processing" or "Busy" => ConsoleColor.Yellow,
-            "Retrying" or "Stopping" => ConsoleColor.DarkYellow,
+            "Healthy" or "Completed" => ConsoleColor.Green,
+            "Pending" or "Queued" => ConsoleColor.Cyan,
+            "Processing" => ConsoleColor.Yellow,
+            "Retrying" => ConsoleColor.DarkYellow,
             "DeadLettered" => ConsoleColor.Red,
-            "Cancelled" or "Offline" => ConsoleColor.DarkGray,
+            "Cancelled" => ConsoleColor.DarkGray,
             _ => ConsoleColor.Gray
         };
     }
@@ -175,10 +157,7 @@ internal sealed class DebugConsole(bool useColor)
         return value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'");
     }
 
-    private static void AddFilter(
-        ICollection<string> filters,
-        string name,
-        string? value)
+    private static void AddFilter(ICollection<string> filters, string name, string? value)
     {
         if (value is not null)
         {

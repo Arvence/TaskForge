@@ -14,20 +14,14 @@ internal sealed class TaskForgeDebugClient(HttpClient httpClient)
         return GetAsync<HealthResponse>("api/health", cancellationToken);
     }
 
-    public Task<WorkerManagerSnapshot> GetWorkersAsync(
-        CancellationToken cancellationToken)
+    public Task<JobStatisticsResponse> GetStatisticsAsync(CancellationToken cancellationToken)
     {
-        return GetAsync<WorkerManagerSnapshot>("api/workers", cancellationToken);
+        return GetAsync<JobStatisticsResponse>("api/stats", cancellationToken);
     }
 
-    public Task<JobPageResponse> GetJobsAsync(
-        JobFilters filters,
-        int pageSize,
-        CancellationToken cancellationToken)
+    public Task<JobPageResponse> GetJobsAsync(JobFilters filters, int pageSize, CancellationToken cancellationToken)
     {
-        return GetAsync<JobPageResponse>(
-            BuildJobsPath(filters, pageSize),
-            cancellationToken);
+        return GetAsync<JobPageResponse>(BuildJobsPath(filters, pageSize), cancellationToken);
     }
 
     internal static string BuildJobsPath(JobFilters filters, int pageSize)
@@ -36,35 +30,27 @@ internal sealed class TaskForgeDebugClient(HttpClient httpClient)
         AddQueryValue(query, "status", filters.Status);
         AddQueryValue(query, "type", filters.Type);
         AddQueryValue(query, "priority", filters.Priority);
+        AddQueryValue(query, "applicationId", filters.ApplicationId);
         return $"api/jobs?{string.Join('&', query)}";
     }
 
-    private async Task<T> GetAsync<T>(
-        string path,
-        CancellationToken cancellationToken)
+    private async Task<T> GetAsync<T>(string path, CancellationToken cancellationToken)
     {
-        using HttpResponseMessage response = await httpClient.GetAsync(
-            path,
-            cancellationToken);
+        using HttpResponseMessage response = await httpClient.GetAsync(path, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             string details = await ReadErrorAsync(response, cancellationToken);
             throw new TaskForgeApiException(response.StatusCode, details);
         }
 
-        T? result = await response.Content.ReadFromJsonAsync<T>(
-            JsonOptions,
-            cancellationToken);
+        T? result = await response.Content.ReadFromJsonAsync<T>(JsonOptions, cancellationToken);
         return result
             ?? throw new TaskForgeApiException(
                 response.StatusCode,
                 "The API returned an empty response.");
     }
 
-    private static void AddQueryValue(
-        ICollection<string> query,
-        string name,
-        string? value)
+    private static void AddQueryValue(ICollection<string> query, string name, string? value)
     {
         if (!string.IsNullOrWhiteSpace(value))
         {
@@ -72,9 +58,7 @@ internal sealed class TaskForgeDebugClient(HttpClient httpClient)
         }
     }
 
-    private static async Task<string> ReadErrorAsync(
-        HttpResponseMessage response,
-        CancellationToken cancellationToken)
+    private static async Task<string> ReadErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         string body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(body))
@@ -105,9 +89,7 @@ internal sealed class TaskForgeDebugClient(HttpClient httpClient)
     }
 }
 
-internal sealed class TaskForgeApiException(
-    HttpStatusCode statusCode,
-    string message) : Exception(message)
+internal sealed class TaskForgeApiException(HttpStatusCode statusCode, string message) : Exception(message)
 {
     public HttpStatusCode StatusCode { get; } = statusCode;
 }

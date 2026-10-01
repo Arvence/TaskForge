@@ -52,31 +52,28 @@ internal sealed record DebugCommand(DebugCommandKind Kind, JobFilters? Filters =
         }
 
         Dictionary<string, string> options = ParseOptions(arguments.Skip(1));
-        string? status = NormalizeChoice(
-            options.GetValueOrDefault("--status"),
-            Statuses,
-            "status");
-        string? priority = NormalizeChoice(
-            options.GetValueOrDefault("--priority"),
-            Priorities,
-            "priority");
+        string? status = NormalizeChoice(options.GetValueOrDefault("--status"), Statuses, "status");
+        string? priority = NormalizeChoice(options.GetValueOrDefault("--priority"), Priorities, "priority");
         string? type = options.GetValueOrDefault("--type");
+        string? applicationId = options.GetValueOrDefault("--application-id");
 
         if (type is not null && string.IsNullOrWhiteSpace(type))
         {
             throw new ArgumentException("--type cannot be blank.");
         }
 
-        return new DebugCommand(
-            DebugCommandKind.Jobs,
-            new JobFilters(status, type, priority));
+        if (applicationId is not null && string.IsNullOrWhiteSpace(applicationId))
+        {
+            throw new ArgumentException("--application-id cannot be blank.");
+        }
+
+        return new DebugCommand(DebugCommandKind.Jobs, new JobFilters(status, type, priority, applicationId));
     }
 
-    private static Dictionary<string, string> ParseOptions(
-        IEnumerable<string> arguments)
+    private static Dictionary<string, string> ParseOptions(IEnumerable<string> arguments)
     {
         HashSet<string> allowed =
-            new(["--status", "--type", "--priority"], StringComparer.OrdinalIgnoreCase);
+            new(["--status", "--type", "--priority", "--application-id"], StringComparer.OrdinalIgnoreCase);
         Dictionary<string, string> result = new(StringComparer.OrdinalIgnoreCase);
         string[] items = [.. arguments];
 
@@ -103,10 +100,7 @@ internal sealed record DebugCommand(DebugCommandKind Kind, JobFilters? Filters =
         return result;
     }
 
-    private static string? NormalizeChoice(
-        string? value,
-        IEnumerable<string> choices,
-        string description)
+    private static string? NormalizeChoice(string? value, IEnumerable<string> choices, string description)
     {
         if (value is null)
         {
