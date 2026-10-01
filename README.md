@@ -1,6 +1,6 @@
 # TaskForge
 
-TaskForge is a .NET 8 background job orchestration server backed by Microsoft SQL
+TaskForge is a .NET 10 background job orchestration server backed by Microsoft SQL
 Server (MSSQL). Applications submit work over HTTP; external execution clients
 acquire jobs, run their own business code, and report outcomes. TaskForge owns
 persistent state, retries, timeouts, cancellation, and execution history.
@@ -28,8 +28,8 @@ SQL Server locally.
 
 ### Built With
 
-- .NET 8 / ASP.NET Core
-- Entity Framework Core 8
+- .NET 10 / ASP.NET Core
+- Entity Framework Core 10
 - SQL Server 2022
 - Docker / Docker Compose
 - PowerShell
@@ -536,7 +536,7 @@ it is `null` when neither outcome exists.
 
 ## Debugging Console
 
-The optional read-only console requires the .NET 8 SDK and a running TaskForge
+The optional read-only console requires the .NET 10 SDK and a running TaskForge
 API. Set `apiBaseUrl` in `src/TaskForge.Debugging/debugsettings.json` if the API is
 not at `http://localhost:8275`, then run:
 
@@ -555,7 +555,8 @@ track connected execution clients.
 
 ## Testing & CI
 
-Use the .NET 8 SDK for local development. Unit tests run without Docker;
+Use a stable .NET 10 SDK for local development. `global.json` keeps SDK selection
+within .NET 10; CI and Docker use the same major version. Unit tests run without Docker;
 integration tests use real MSSQL through Testcontainers and require a running
 Linux container engine.
 

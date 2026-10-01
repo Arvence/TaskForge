@@ -23,7 +23,7 @@ SQLite-based `v1.0.0` release and are not included in that tag.
 - Centralized Problem Details responses for unexpected API exceptions,
   with server-side logging.
 - SQL Server migrations applied automatically during API startup.
-- A multi-stage .NET 8 Docker image and Compose environment with SQL Server
+- A multi-stage .NET 10 Docker image and Compose environment with SQL Server
   2022 Developer, database health checks, persistent storage, and API restarts.
 - An example environment file and exclusions for local secrets in Git and
   Docker builds.
@@ -38,6 +38,9 @@ SQLite-based `v1.0.0` release and are not included in that tag.
 
 ### Changed
 
+- Upgraded the server, debugging console, and tests to .NET 10, with EF Core
+  and its command-line tool at 10.0.12 and Swashbuckle at 10.2.3. Local builds,
+  CI, and Docker now select .NET 10 without major-version roll-forward.
 - Replaced SQLite with SQL Server, using native `datetimeoffset` mappings,
   case-insensitive job-type filtering, and unique idempotency keys.
 - Made an explicit SQL Server connection string required at startup.
@@ -61,6 +64,8 @@ SQLite-based `v1.0.0` release and are not included in that tag.
 
 This update is not a drop-in replacement for the SQLite release:
 
+- Install a stable .NET 10 SDK for local development and run `dotnet tool restore`
+  to update the repository's EF tool. Rebuild Docker images when upgrading.
 - Configure SQL Server and provide `ConnectionStrings__TaskForge`. Startup
   migrations create the SQL Server schema but do not transfer SQLite data.
 - Update job-list consumers to read the paginated response's `items` and
