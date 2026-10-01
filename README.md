@@ -121,7 +121,7 @@ Invoke-RestMethod "http://localhost:8275/api/jobs/$($job.id)" | ConvertTo-Json -
 ```
 
 - Success: `Queued → Processing → Completed`.
-- Retry: `Queued → Processing → Retrying → Queued → Processing → Completed`.
+- Retry: `Queued → Processing → Retrying → Processing → Completed`.
 - Permanent failures or exhausted retries end in `DeadLettered`.
 
 Without an execution client, the job stays `Queued`. After a client reports
@@ -195,7 +195,7 @@ flowchart LR
     Queued -->|Acquire| Processing
     Processing -->|Success| Completed
     Processing -->|Retryable failure or timeout| Retrying
-    Retrying -->|Retry due| Queued
+    Retrying -->|Acquire after backoff| Processing
     Processing -->|Permanent failure or retries exhausted| DeadLettered
     Processing -->|Lease expired, retries remain| Retrying
     Pending -->|Cancel| Cancelled
@@ -206,6 +206,8 @@ flowchart LR
 
 `Pending` is the initial domain state; accepted submissions are stored as
 `Queued`. Retries wait for their backoff before becoming eligible again.
+A due retry remains `Retrying` until acquisition commits it as `Processing`
+together with a new attempt.
 
 Server maintenance expires running attempts on polls at or after
 `startedAtUtc + timeoutSeconds`, using SQL Server time without waiting for lease
@@ -445,7 +447,7 @@ problem without creating a job.
     "jobId": "a70c8b73-6bb2-4fa4-a2bb-4f5c054c7a72",
     "attemptId": "c8b59454-9eb3-4720-8fef-f008e7a3d0e6",
     "attemptNumber": 1,
-    "workerId": "taskforge-api-1-1",
+    "workerId": "client-1",
     "startedAtUtc": "2026-09-17T12:00:00Z",
     "deadlineAtUtc": "2026-09-17T12:00:30Z",
     "finishedAtUtc": "2026-09-17T12:00:00.250Z",
