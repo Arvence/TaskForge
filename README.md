@@ -534,6 +534,25 @@ Statistics describe current job states, not execution attempts. Success rate is
 `completed / (completed + deadLettered) * 100`, rounded to two decimal places;
 it is `null` when neither outcome exists.
 
+## Debugging Console
+
+The optional read-only console requires the .NET 8 SDK and a running TaskForge
+API. Set `apiBaseUrl` in `src/TaskForge.Debugging/debugsettings.json` if the API is
+not at `http://localhost:8275`, then run:
+
+```powershell
+dotnet run --project src/TaskForge.Debugging
+dotnet run --project src/TaskForge.Debugging -- jobs --application-id example-app --status Queued
+dotnet run --project src/TaskForge.Debugging -- --help
+```
+
+The dashboard shows API health, job counts across all applications, success rate,
+and the five newest jobs. `jobs` shows up to 20 matching jobs, including their
+application IDs; it also accepts `--type` and `--priority`. Statistics and job
+lists are separate reads and can differ while jobs change. `N/A` means no jobs
+have completed or been dead-lettered yet. The console does not execute jobs or
+track connected execution clients.
+
 ## Testing & CI
 
 Use the .NET 8 SDK for local development. Unit tests run without Docker;
