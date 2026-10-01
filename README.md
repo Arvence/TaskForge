@@ -543,9 +543,10 @@ it is `null` when neither outcome exists.
 
 ## Optional .NET Client
 
-`src/TaskForge.SDK` targets .NET 10 and has no server project or NuGet package
-dependencies. Reference `TaskForge.SDK.csproj` from a .NET application to use the
-typed HTTP client. Direct HTTP clients remain supported.
+`src/TaskForge.SDK` targets .NET 10 and has no server project references. Its
+handler registry uses `Microsoft.Extensions.DependencyInjection.Abstractions`.
+Reference `TaskForge.SDK.csproj` from a .NET application to use the typed HTTP
+client. Direct HTTP clients remain supported.
 
 ```csharp
 using System.Text.Json;
@@ -605,6 +606,70 @@ non-JSON errors still preserve the raw response body. Transport errors remain
 The client sends each request once. It contains no handler loop, business execution
 retry logic, or automatic HTTP retries. An application executes only assignments
 returned by the server; server retry counts do not instruct it to rerun a handler.
+
+### Client-owned handler registration
+
+Implement `IJobHandler<TPayload>` in the client application. Its
+`HandleAsync(TPayload payload, CancellationToken cancellationToken)` method returns
+`Task<JsonElement?>`; return null when the handler has no result. Payload DTOs,
+business implementations, and their dependencies belong to the application.
+
+Configure mappings once on the application's DI service collection before building
+its host or service provider:
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+using TaskForge.SDK.Handlers;
+
+services.AddTaskForgeHandlers(handlers => handlers
+    .Register<SendEmailPayload, SendEmailHandler>("send-email")
+    .Register<GenerateReportPayload, GenerateReportHandler>("generate-report"));
+```
+
+The example handler and payload types are supplied by the client. Use the DI
+container supplied by the application's .NET host, or add
+`Microsoft.Extensions.DependencyInjection` when constructing a console app's
+service provider directly.
+
+`JobHandlerRegistry` is a singleton with mappings frozen when
+`AddTaskForgeHandlers` returns. Retaining the builder does not permit later
+registration. Duplicate type strings, including casing or surrounding-whitespace
+variants, throw during startup. Type names are trimmed, limited to 100 characters,
+and matched case-insensitively. `RegisteredTypes` is a read-only, sorted list usable
+directly in wait requests:
+
+```csharp
+JobHandlerRegistry registry = serviceProvider.GetRequiredService<JobHandlerRegistry>();
+ExecutionAssignmentResponse? assignment = await client.WaitAsync(
+    new WaitForExecutionRequest("worker-01", registry.RegisteredTypes));
+
+if (assignment is not null)
+{
+    JsonElement? result = await registry.ExecuteAsync(assignment.Type, assignment.Payload);
+    await client.CompleteAsync(assignment.JobId, assignment.AttemptId,
+        new CompleteExecutionRequest(assignment.WorkerId, result));
+}
+```
+
+Each `ExecuteAsync` call deserializes the payload locally and creates an async DI
+scope for one handler invocation. Handler types are registered as scoped by default;
+existing scoped or transient factories are respected, while singleton handler
+registrations are rejected. Keep those handler lifetimes when configuring DI.
+Handlers and scoped dependencies are disposed before the call returns, including
+on failure or cancellation. JSON results are cloned before scope disposal.
+
+Payload deserialization uses System.Text.Json web defaults, respects required
+constructor parameters and nullable annotations, and honors DTO serialization
+attributes. Use required properties or required constructor parameters for fields
+that must be present. Null, undefined, or incompatible payloads throw
+`InvalidJobPayloadException` before handler resolution; the exception retains the
+payload type and underlying `JsonException`. Missing mappings throw
+`JobHandlerNotFoundException`. Business validation and handler exceptions remain
+application-owned.
+
+The registry performs no HTTP requests or automatic result reporting. The caller
+chooses when to invoke a returned assignment and report Complete or Fail. There is
+no background polling loop, SQL mapping storage, or assembly upload.
 
 ## Debugging Console
 
