@@ -20,14 +20,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up .NET 8
+      - name: Set up .NET 10
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
-
-      - name: Select .NET 8 for this run
-        # Override latestMajor only in the runner's checkout.
-        run: dotnet new globaljson --sdk-version 8.0.100 --roll-forward latestFeature --force
+          dotnet-version: '10.0.x'
 
       - name: Restore dependencies
         run: dotnet restore TaskForge.sln
@@ -48,14 +44,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up .NET 8
+      - name: Set up .NET 10
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '8.0.x'
-
-      - name: Select .NET 8 for this run
-        # Override latestMajor only in the runner's checkout.
-        run: dotnet new globaljson --sdk-version 8.0.100 --roll-forward latestFeature --force
+          dotnet-version: '10.0.x'
 
       - name: Restore dependencies
         run: dotnet restore TaskForge.sln

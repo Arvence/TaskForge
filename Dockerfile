@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 COPY ["TaskForge.sln", "global.json", "Directory.Build.props", "./"]
@@ -14,10 +14,10 @@ RUN dotnet restore TaskForge.sln
 COPY . .
 RUN dotnet publish TaskForge.sln --configuration Release --no-restore -p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 ENV URLS=http://+:8080
 EXPOSE 8080
-COPY --from=build /src/src/TaskForge.Api/bin/Release/net8.0/publish/ ./
+COPY --from=build /src/src/TaskForge.Api/bin/Release/net10.0/publish/ ./
 USER app
 ENTRYPOINT ["dotnet", "TaskForge.Api.dll"]
