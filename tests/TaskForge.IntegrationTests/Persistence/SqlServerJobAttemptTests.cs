@@ -46,7 +46,7 @@ public sealed class SqlServerJobAttemptTests(SqlServerFixture fixture) : SqlServ
         {
             EfCoreExecutionStore executions = new(context, new JobRetryPolicy(Options.Create(new WorkerOptions())));
             ExecutionResult result = await executions.TransitionAsync(new("test-app", jobId, first.Id, first.WorkerId), new ExecutionReport.Complete(null));
-            Assert.Equal(ExecutionResult.Stale, result);
+            Assert.Equal(ExecutionResult.TimedOut, result);
         }
 
         await using TaskForgeDbContext readContext = new(DatabaseOptions);

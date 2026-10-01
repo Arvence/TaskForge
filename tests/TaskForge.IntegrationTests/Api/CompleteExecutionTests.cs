@@ -165,6 +165,11 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
         using HttpResponseMessage response = await PostAsync(client, assignment, "{\"late\":true}");
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        if (!cancelled)
+        {
+            Assert.Contains("\"code\":\"AttemptTimedOut\"", await response.Content.ReadAsStringAsync());
+        }
+
         await using TaskForgeDbContext read = new(DatabaseOptions);
         Job persisted = await read.Jobs.SingleAsync();
         Assert.Null(persisted.ResultJson);

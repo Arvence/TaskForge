@@ -134,8 +134,8 @@ public sealed class SqlServerExecutionTransitionTests(SqlServerFixture fixture) 
             current = (await new EfCoreJobStore(context).DistributeAtAsync("test-app", "worker-01", ["example"], TimeSpan.FromSeconds(30), recoveredAt.AddSeconds(5)))!;
         }
 
-        Assert.Equal(ExecutionResult.Stale, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Complete("\"old report\"")));
-        Assert.Equal(ExecutionResult.Stale, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Fail("Failure", "Stale failure.")));
+        Assert.Equal(ExecutionResult.TimedOut, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Complete("\"old report\"")));
+        Assert.Equal(ExecutionResult.TimedOut, await Store(staleContext).TransitionAsync(Identity(old), new ExecutionReport.Fail("Failure", "Stale failure.")));
         Assert.Empty(staleContext.ChangeTracker.Entries());
         await AssertRunningAsync(current);
         await using TaskForgeDbContext read = new(ExecutionOptions);

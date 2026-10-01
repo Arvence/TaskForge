@@ -496,6 +496,10 @@ identical previously accepted report. Duplicate reports do not rewrite history
 or consume another retry; a historical failure duplicate can return a job that
 has since moved to a later attempt.
 
+Reports for timed-out attempts return `409` Problem Details with
+`code: "AttemptTimedOut"`, including after a newer attempt starts. Once timeout
+has been recorded, these reports leave the current assignment and history unchanged.
+
 | Response | Contract |
 |---|---|
 | `400` | `application/problem+json`; validation errors include an `errors` dictionary. Malformed JSON or binding errors use the same media type without field validation details. |

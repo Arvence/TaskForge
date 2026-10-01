@@ -225,6 +225,11 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
         using HttpResponseMessage response = await PostAsync(client, assignment, "InvalidPayload", "Permanent client failure.");
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        if (!cancelled)
+        {
+            Assert.Contains("\"code\":\"AttemptTimedOut\"", await response.Content.ReadAsStringAsync());
+        }
+
         await using TaskForgeDbContext read = new(DatabaseOptions);
         Assert.Equal(cancelled ? JobStatus.Cancelled : JobStatus.Retrying, (await read.Jobs.SingleAsync()).Status);
         Assert.Equal(cancelled ? JobAttemptOutcome.Cancelled : JobAttemptOutcome.TimedOut, (await read.JobAttempts.SingleAsync()).Outcome);

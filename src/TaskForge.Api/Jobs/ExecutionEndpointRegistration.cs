@@ -69,6 +69,8 @@ public static class ExecutionEndpointRegistration
     {
         ExecutionResult.Accepted or ExecutionResult.Duplicate => Results.Ok(JobResponse.From(result.Job!)),
         ExecutionResult.Missing => Results.Problem(statusCode: StatusCodes.Status404NotFound, detail: "The application, job, and attempt combination was not found."),
+        ExecutionResult.TimedOut => Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: "The execution report was rejected: AttemptTimedOut.",
+            extensions: new Dictionary<string, object?> { ["code"] = "AttemptTimedOut" }),
         _ => Results.Problem(statusCode: StatusCodes.Status409Conflict, detail: $"The execution report was rejected: {result.Status}.")
     };
 }

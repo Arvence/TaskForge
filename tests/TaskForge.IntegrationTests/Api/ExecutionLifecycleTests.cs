@@ -63,6 +63,9 @@ public sealed class ExecutionLifecycleTests(SqlServerFixture fixture) : SqlServe
 
         using HttpResponseMessage stale = await ReportAsync(client, old, operation);
         await AssertProblemAsync(stale, HttpStatusCode.Conflict);
+        JsonElement problem = await stale.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AttemptTimedOut", problem.GetProperty("code").GetString());
+        Assert.Contains("AttemptTimedOut", problem.GetProperty("detail").GetString());
         Assert.Equal(before, await SnapshotAsync());
 
         using HttpResponseMessage completed = await ReportAsync(client, current, "complete");

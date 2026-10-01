@@ -285,6 +285,11 @@ public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryP
             return new(ExecutionResult.Duplicate, assignment);
         }
 
+        if (attempt.Outcome == JobAttemptOutcome.TimedOut)
+        {
+            return new(ExecutionResult.TimedOut, assignment);
+        }
+
         if (await dbContext.JobAttempts.AnyAsync(candidate => candidate.JobId == job.Id && candidate.AttemptNumber > attempt.AttemptNumber, cancellationToken))
         {
             return new(ExecutionResult.Stale);
@@ -295,7 +300,6 @@ public sealed class EfCoreExecutionStore(TaskForgeDbContext dbContext, JobRetryP
             ExecutionResult finished = attempt.Outcome switch
             {
                 JobAttemptOutcome.Cancelled => ExecutionResult.Cancelled,
-                JobAttemptOutcome.TimedOut => ExecutionResult.TimedOut,
                 JobAttemptOutcome.Abandoned => ExecutionResult.Stale,
                 _ => ExecutionResult.Duplicate
             };
