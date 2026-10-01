@@ -12,6 +12,7 @@ persistent state, retries, timeouts, cancellation, and execution history.
 - Timeouts, capped exponential retries, dead-letter handling, and cancellation.
 - Idempotent submission, optimistic concurrency, and expired-lease recovery.
 - Filtered and paginated job lists, execution attempt history, and job statistics.
+- Optional independent .NET HTTP client in `TaskForge.SDK`.
 - Docker Compose setup, automated tests, and GitHub Actions CI.
 
 ## Quick Start
@@ -540,6 +541,71 @@ Statistics describe current job states, not execution attempts. Success rate is
 `completed / (completed + deadLettered) * 100`, rounded to two decimal places;
 it is `null` when neither outcome exists.
 
+## Optional .NET Client
+
+`src/TaskForge.SDK` targets .NET 10 and has no server project or NuGet package
+dependencies. Reference `TaskForge.SDK.csproj` from a .NET application to use the
+typed HTTP client. Direct HTTP clients remain supported.
+
+```csharp
+using System.Text.Json;
+using TaskForge.SDK;
+using TaskForge.SDK.Jobs;
+
+using HttpClient http = new() { Timeout = Timeout.InfiniteTimeSpan };
+TaskForgeClient client = new(http, new TaskForgeClientOptions
+{
+    BaseUrl = new Uri("http://localhost:8275"),
+    ApplicationId = "a-project"
+});
+
+JobResponse job = await client.SubmitAsync(
+    new SubmitJobRequest("add-numbers", JsonSerializer.SerializeToElement(new { left = 20, right = 22 })),
+    idempotencyKey: "addition-001");
+
+ExecutionAssignmentResponse? assignment = await client.WaitAsync(
+    new WaitForExecutionRequest("worker-01", ["add-numbers"], WaitSeconds: 20));
+
+if (assignment is not null)
+{
+    int sum = assignment.Payload.GetProperty("left").GetInt32() + assignment.Payload.GetProperty("right").GetInt32();
+    await client.CompleteAsync(assignment.JobId, assignment.AttemptId,
+        new CompleteExecutionRequest(assignment.WorkerId, JsonSerializer.SerializeToElement(new { sum })));
+}
+
+JobResponse persisted = await client.GetJobAsync(job.Id);
+IReadOnlyList<JobAttemptResponse> history = await client.GetAttemptsAsync(job.Id);
+```
+
+`FailAsync(jobId, attemptId, new FailExecutionRequest(workerId, errorCode, errorMessage))`
+reports an execution failure; `CancelAsync(jobId)` requests server cancellation.
+Every operation accepts a `CancellationToken`. Submission, acquisition, and reports
+use the configured application ID, trimmed and lowercased. Job/history reads and
+cancellation use the server's existing job-ID routes. Payloads and results are
+`JsonElement` values, and protocol enums use JSON strings. A `204` wait returns
+`null`.
+
+The caller owns the injected `HttpClient`; the SDK neither disposes it nor changes
+its base address, timeout, or default headers. `RequestTimeout` defaults to 30
+seconds and covers sending and reading the response. Wait requests use the greater
+of that timeout and `WaitSeconds + 10` seconds; supported waits are 0 through 30
+seconds. Set the injected client's timeout to infinite as above, or at least the
+SDK request budget (40 seconds for the maximum wait). A shorter injected timeout
+is rejected before sending. SDK timeouts throw `TimeoutException`; caller
+cancellation remains `OperationCanceledException`.
+
+Non-success responses throw `TaskForgeApiException`, retaining `StatusCode`,
+`ResponseBody`, and a typed `Error` with the original `Code`, `Detail`, `Message`,
+validation `Errors`, and additional JSON fields. For example,
+`exception.Error.Code == "AttemptTimedOut"` identifies a timed-out attempt.
+Responses without a code retain their original detail/message and a null code;
+non-JSON errors still preserve the raw response body. Transport errors remain
+`HttpRequestException`.
+
+The client sends each request once. It contains no handler loop, business execution
+retry logic, or automatic HTTP retries. An application executes only assignments
+returned by the server; server retry counts do not instruct it to rerun a handler.
+
 ## Debugging Console
 
 The optional read-only console requires the .NET 10 SDK and a running TaskForge
@@ -580,7 +646,8 @@ The workflow does not publish or deploy the image.
 ## Known Limitations
 
 - Intended for a trusted network; the API has no authentication. Business work
-  requires external execution clients; no client SDK is included yet.
+  requires external execution clients. The optional SDK provides HTTP operations;
+  handler execution and polling loops remain application-owned.
 - External requests can repeat after retries or lease recovery. Submission
   idempotency does not guarantee exactly-once side effects; receivers must
   tolerate duplicate calls.
