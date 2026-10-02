@@ -16,8 +16,11 @@ public sealed class TaskForgeWorker : BackgroundService
     private readonly JobHandlerRegistry _registry;
     private readonly TaskForgeWorkerOptions _options;
     private readonly ILogger<TaskForgeWorker> _logger;
+    private readonly TimeProvider _timeProvider;
+    private readonly IHostApplicationLifetime? _lifetime;
+    private int _stopRequested;
 
-    public TaskForgeWorker(TaskForgeClient client, JobHandlerRegistry registry, TaskForgeWorkerOptions options, ILogger<TaskForgeWorker>? logger = null)
+    public TaskForgeWorker(TaskForgeClient client, JobHandlerRegistry registry, TaskForgeWorkerOptions options, ILogger<TaskForgeWorker>? logger = null, TimeProvider? timeProvider = null, IHostApplicationLifetime? lifetime = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(registry);
@@ -32,12 +35,28 @@ public sealed class TaskForgeWorker : BackgroundService
         _registry = registry;
         _options = options;
         _logger = logger ?? NullLogger<TaskForgeWorker>.Instance;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _lifetime = lifetime;
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Exchange(ref _stopRequested, 1);
+        using CancellationTokenSource timeout = new(_options.ShutdownTimeout, _timeProvider);
+        using CancellationTokenSource boundedStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        CancellationToken stopToken = boundedStop.Token;
+        Task stopping = Task.Run(() => base.StopAsync(stopToken), CancellationToken.None);
+        await stopping.WaitAsync(stopToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        if (ExecuteTask is { IsCompleted: false })
+        {
+            _logger.LogWarning("TaskForge shutdown waiting ended with an execution still running. Its slot remains occupied until it exits; the server can recover unreported work.");
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         string sessionId = Guid.NewGuid().ToString("N");
-        using CancellationTokenSource slots = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        using CancellationTokenSource slots = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _lifetime?.ApplicationStopping ?? CancellationToken.None);
         await Task.WhenAll(Enumerable.Range(1, _options.SlotCount).Select(slot => RunSlotAsync($"taskforge-{sessionId}-{slot}", slots))).ConfigureAwait(false);
     }
 
@@ -46,11 +65,16 @@ public sealed class TaskForgeWorker : BackgroundService
         CancellationToken stoppingToken = slots.Token;
         try
         {
-            while (!stoppingToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _stopRequested) == 0)
             {
                 try
                 {
                     ExecutionAssignmentResponse? assignment = await _client.WaitAsync(new(workerId, _registry.RegisteredTypes, _options.WaitSeconds), stoppingToken).ConfigureAwait(false);
+                    if (stoppingToken.IsCancellationRequested || Volatile.Read(ref _stopRequested) != 0)
+                    {
+                        return;
+                    }
+
                     if (assignment is null)
                     {
                         await Task.Delay(_options.NoWorkDelay, stoppingToken).ConfigureAwait(false);
@@ -79,6 +103,7 @@ public sealed class TaskForgeWorker : BackgroundService
         if (!string.Equals(assignment.ApplicationId, _client.ApplicationId, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(assignment.WorkerId, workerId, StringComparison.Ordinal)
             || assignment.JobId == Guid.Empty || assignment.AttemptId == Guid.Empty || assignment.AttemptNumber < 1
+            || assignment.TimeoutSeconds <= 0 || assignment.DeadlineAtUtc <= assignment.StartedAtUtc
             || string.IsNullOrWhiteSpace(assignment.Type))
         {
             throw new InvalidOperationException("TaskForge returned an invalid assignment identity. No handler was invoked and no outcome was reported.");
@@ -87,16 +112,31 @@ public sealed class TaskForgeWorker : BackgroundService
 
     private async Task ExecuteAssignmentAsync(ExecutionAssignmentResponse assignment, CancellationToken stoppingToken)
     {
+        TimeSpan remaining = assignment.DeadlineAtUtc - _timeProvider.GetUtcNow();
+        TimeSpan duration = assignment.DeadlineAtUtc - assignment.StartedAtUtc;
+        TimeSpan maximum = TimeSpan.FromSeconds(assignment.TimeoutSeconds);
+        remaining = remaining < duration ? remaining : duration;
+        remaining = remaining < maximum ? remaining : maximum;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        using CancellationTokenSource deadline = new(remaining, _timeProvider);
+        using CancellationTokenSource observedStop = new();
+        using CancellationTokenSource execution = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, deadline.Token, observedStop.Token);
+        using CancellationTokenSource monitorStop = CancellationTokenSource.CreateLinkedTokenSource(execution.Token);
+        Task monitor = MonitorExecutionAsync(assignment, observedStop, monitorStop.Token);
         JsonElement? result = null;
         FailExecutionRequest? failure = null;
         try
         {
-            result = await _registry.ExecuteAsync(assignment.Type, assignment.Payload, stoppingToken).ConfigureAwait(false);
+            result = await _registry.ExecuteAsync(assignment.Type, assignment.Payload, execution.Token).ConfigureAwait(false);
             ValidateResult(result);
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (execution.IsCancellationRequested)
         {
-            throw;
+            return;
         }
         catch (Exception exception)
         {
@@ -110,7 +150,18 @@ public sealed class TaskForgeWorker : BackgroundService
             string message = string.IsNullOrWhiteSpace(exception.Message) ? "The client execution failed." : exception.Message.Trim();
             failure = new(assignment.WorkerId, code.Length > 100 ? code[..100] : code, message.Length > 4000 ? message[..4000] : message);
         }
+        finally
+        {
+            await monitorStop.CancelAsync().ConfigureAwait(false);
+            await monitor.ConfigureAwait(false);
+        }
+
         stoppingToken.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref _stopRequested) != 0)
+        {
+            return;
+        }
+
         try
         {
             if (failure is null)
@@ -125,6 +176,47 @@ public sealed class TaskForgeWorker : BackgroundService
         catch (TaskForgeApiException exception) when (exception.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
         {
             _logger.LogWarning(exception, "TaskForge rejected the report for job {JobId}, attempt {AttemptId}. Waiting for a new assignment.", assignment.JobId, assignment.AttemptId);
+        }
+    }
+
+    private async Task MonitorExecutionAsync(ExecutionAssignmentResponse assignment, CancellationTokenSource observedStop, CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(_options.StatusPollInterval, _timeProvider, cancellationToken).ConfigureAwait(false);
+                JobResponse job;
+                try
+                {
+                    job = await _client.GetJobAsync(assignment.JobId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsTransportFailure(exception))
+                {
+                    _logger.LogWarning(exception, "TaskForge status read failed for job {JobId}. The original execution deadline remains in effect.", assignment.JobId);
+                    continue;
+                }
+
+                if (job.Id != assignment.JobId || !string.Equals(job.ApplicationId, assignment.ApplicationId, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("TaskForge returned a job status with a different job or application identity.");
+                }
+
+                if (job.CancellationRequested || job.Status != JobStatus.Processing
+                    || !string.Equals(job.OwningWorkerId, assignment.WorkerId, StringComparison.Ordinal) || job.StartedAtUtc != assignment.StartedAtUtc)
+                {
+                    await observedStop.CancelAsync().ConfigureAwait(false);
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            await observedStop.CancelAsync().ConfigureAwait(false);
+            throw;
         }
     }
 

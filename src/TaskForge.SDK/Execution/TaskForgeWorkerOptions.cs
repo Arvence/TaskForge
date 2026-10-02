@@ -6,6 +6,8 @@ public sealed record TaskForgeWorkerOptions
     public int WaitSeconds { get; init; } = 20;
     public TimeSpan NoWorkDelay { get; init; } = TimeSpan.FromMilliseconds(250);
     public TimeSpan TransportErrorDelay { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan StatusPollInterval { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     internal void Validate()
     {
@@ -14,6 +16,8 @@ public sealed record TaskForgeWorkerOptions
         ArgumentOutOfRangeException.ThrowIfGreaterThan(WaitSeconds, 30);
         ValidateDelay(NoWorkDelay, nameof(NoWorkDelay));
         ValidateDelay(TransportErrorDelay, nameof(TransportErrorDelay));
+        ValidateDelay(StatusPollInterval, nameof(StatusPollInterval));
+        ValidateDelay(ShutdownTimeout, nameof(ShutdownTimeout));
     }
 
     private static void ValidateDelay(TimeSpan delay, string name)

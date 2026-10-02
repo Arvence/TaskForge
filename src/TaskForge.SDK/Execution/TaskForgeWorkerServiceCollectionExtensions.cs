@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace TaskForge.SDK.Execution;
@@ -16,6 +17,7 @@ public static class TaskForgeWorkerServiceCollectionExtensions
         options ??= new TaskForgeWorkerOptions();
         options.Validate();
         services.AddSingleton(options);
+        services.TryAddSingleton(TimeProvider.System);
         services.AddHostedService<TaskForgeWorker>();
         return services;
     }
