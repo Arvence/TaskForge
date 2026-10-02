@@ -14,7 +14,7 @@ using TaskForge.SDK.Jobs;
 
 namespace TaskForge.UnitTests.SDK;
 
-public sealed class TaskForgeWorkerTests
+public sealed partial class TaskForgeWorkerTests
 {
     [Fact]
     public async Task No_work_is_followed_by_new_waits_and_repeated_assignments_keep_their_exact_identity()
@@ -369,10 +369,21 @@ public sealed class TaskForgeWorkerTests
         private readonly ServiceProvider _provider;
         private readonly HttpClient _http;
 
-        public WorkerFixture(TaskForgeWorkerOptions? options = null)
+        public WorkerFixture(TaskForgeWorkerOptions? options = null, TimeProvider? timeProvider = null, IHostApplicationLifetime? lifetime = null)
         {
+            Server.Clock = timeProvider ?? TimeProvider.System;
             _http = new HttpClient(Server);
             ServiceCollection services = new();
+            if (timeProvider is not null)
+            {
+                services.AddSingleton(timeProvider);
+            }
+
+            if (lifetime is not null)
+            {
+                services.AddSingleton(lifetime);
+            }
+
             services.AddSingleton(State);
             services.AddSingleton(new TaskForgeClient(_http, new() { ApplicationId = " A-Project " }));
             services.AddTaskForgeHandlers(registry => registry.Register<NumberPayload, ProbeHandler>("double"));
@@ -393,7 +404,7 @@ public sealed class TaskForgeWorkerTests
         }
     }
 
-    private sealed record Assignment(Guid JobId, Guid AttemptId, string Type, JsonElement Payload, string? ApplicationId = null, string? WorkerId = null, int AttemptNumber = 1)
+    private sealed record Assignment(Guid JobId, Guid AttemptId, string Type, JsonElement Payload, string? ApplicationId = null, string? WorkerId = null, int AttemptNumber = 1, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? DeadlineAtUtc = null, DateTimeOffset? LeaseExpiresAtUtc = null, int TimeoutSeconds = 30)
     {
         public static Assignment Create() => new(Guid.NewGuid(), Guid.NewGuid(), "DOUBLE", JsonSerializer.SerializeToElement(new { number = 21 }));
     }
@@ -405,6 +416,10 @@ public sealed class TaskForgeWorkerTests
         public Channel<Assignment?> Assignments { get; } = Channel.CreateUnbounded<Assignment?>();
         public Channel<JsonElement> Waits { get; } = Channel.CreateUnbounded<JsonElement>();
         public Channel<Report> Reports { get; } = Channel.CreateUnbounded<Report>();
+        public Channel<ExecutionAssignmentResponse> StatusReads { get; } = Channel.CreateUnbounded<ExecutionAssignmentResponse>();
+        public Func<ExecutionAssignmentResponse, CancellationToken, Task<HttpResponseMessage>>? ReadJob { get; set; }
+        public TimeProvider Clock { get; set; } = TimeProvider.System;
+        private readonly ConcurrentDictionary<Guid, ExecutionAssignmentResponse> _running = new();
         public ConcurrentQueue<HttpStatusCode> WaitStatuses { get; } = new();
         public ConcurrentQueue<HttpStatusCode> ReportStatuses { get; } = new();
         public int WaitCount;
@@ -412,6 +427,16 @@ public sealed class TaskForgeWorkerTests
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.Method == HttpMethod.Get)
+            {
+                Assert.Null(request.Content);
+                Guid jobId = Guid.Parse(request.RequestUri!.Segments.Last());
+                Assert.Equal($"/api/jobs/{jobId:D}", request.RequestUri.AbsolutePath);
+                ExecutionAssignmentResponse assignment = _running[jobId];
+                StatusReads.Writer.TryWrite(assignment);
+                return ReadJob is null ? Status(assignment) : await ReadJob(assignment, cancellationToken);
+            }
+
             Assert.Equal(HttpMethod.Post, request.Method);
             using JsonDocument document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
             JsonElement body = document.RootElement.Clone();
@@ -430,9 +455,11 @@ public sealed class TaskForgeWorkerTests
                     return new(HttpStatusCode.NoContent);
                 }
 
-                DateTimeOffset now = DateTimeOffset.UtcNow;
+                DateTimeOffset now = next.StartedAtUtc ?? Clock.GetUtcNow();
                 ExecutionAssignmentResponse assignment = new(next.JobId, next.ApplicationId ?? "a-project", next.AttemptId, next.AttemptNumber,
-                    next.WorkerId ?? body.GetProperty("workerId").GetString()!, next.Type, next.Payload, 30, now, now.AddSeconds(30), now.AddSeconds(40));
+                    next.WorkerId ?? body.GetProperty("workerId").GetString()!, next.Type, next.Payload, next.TimeoutSeconds, now,
+                    next.DeadlineAtUtc ?? now.AddSeconds(next.TimeoutSeconds), next.LeaseExpiresAtUtc ?? now.AddSeconds(next.TimeoutSeconds + 10));
+                _running[assignment.JobId] = assignment;
                 return Json(JsonSerializer.Serialize(assignment, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
             }
 
@@ -442,6 +469,16 @@ public sealed class TaskForgeWorkerTests
         }
 
         private static HttpResponseMessage Json(string json, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+
+        public static HttpResponseMessage Status(ExecutionAssignmentResponse assignment, bool cancellationRequested = false, JobStatus status = JobStatus.Processing)
+        {
+            JobResponse job = new(assignment.JobId, assignment.ApplicationId, assignment.Type, assignment.Payload, null, null, JobPriority.Normal,
+                status, 3, 0, assignment.TimeoutSeconds, cancellationRequested, assignment.StartedAtUtc, assignment.StartedAtUtc, assignment.StartedAtUtc,
+                assignment.StartedAtUtc, null, null, assignment.WorkerId, assignment.LeaseExpiresAtUtc, null);
+            JsonSerializerOptions options = new(JsonSerializerDefaults.Web);
+            options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+            return Json(JsonSerializer.Serialize(job, options));
+        }
     }
 
     public sealed record NumberPayload(int Number);
