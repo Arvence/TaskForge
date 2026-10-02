@@ -41,6 +41,13 @@ internal sealed class JobHandlerAdapter<TPayload, THandler>(string jobType) : Jo
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
         THandler handler = scope.ServiceProvider.GetRequiredService<THandler>();
         JsonElement? result = await handler.HandleAsync(model, cancellationToken).ConfigureAwait(false);
-        return result?.Clone();
+        try
+        {
+            return result?.Clone();
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            throw new JobResultSerializationException("The handler returned an unreadable JSON result.", exception);
+        }
     }
 }

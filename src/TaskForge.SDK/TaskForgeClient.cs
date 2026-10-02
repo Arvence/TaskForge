@@ -47,6 +47,8 @@ public sealed class TaskForgeClient
         _requestTimeout = options.RequestTimeout;
     }
 
+    public string ApplicationId => _applicationId;
+
     public Task<JobResponse> SubmitAsync(SubmitJobRequest request, string? idempotencyKey = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
