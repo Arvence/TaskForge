@@ -247,8 +247,7 @@ public sealed partial class TaskForgeWorkerTests
     [Theory]
     [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.Conflict)]
-    [InlineData(HttpStatusCode.InternalServerError)]
-    public async Task Rejected_or_unacknowledged_completion_does_not_trigger_a_failure_report_or_reexecution(HttpStatusCode status)
+    public async Task Rejected_completion_does_not_trigger_a_failure_report_or_reexecution(HttpStatusCode status)
     {
         await using WorkerFixture fixture = new();
         fixture.Server.ReportStatuses.Enqueue(status);
@@ -409,7 +408,7 @@ public sealed partial class TaskForgeWorkerTests
         public static Assignment Create() => new(Guid.NewGuid(), Guid.NewGuid(), "DOUBLE", JsonSerializer.SerializeToElement(new { number = 21 }));
     }
 
-    private sealed record Report(string Path, JsonElement Body);
+    private sealed record Report(string Path, JsonElement Body, string RawBody);
 
     private sealed class ScriptedServer : HttpMessageHandler
     {
@@ -418,6 +417,7 @@ public sealed partial class TaskForgeWorkerTests
         public Channel<Report> Reports { get; } = Channel.CreateUnbounded<Report>();
         public Channel<ExecutionAssignmentResponse> StatusReads { get; } = Channel.CreateUnbounded<ExecutionAssignmentResponse>();
         public Func<ExecutionAssignmentResponse, CancellationToken, Task<HttpResponseMessage>>? ReadJob { get; set; }
+        public Func<Report, CancellationToken, Task<HttpResponseMessage>>? SendReport { get; set; }
         public TimeProvider Clock { get; set; } = TimeProvider.System;
         private readonly ConcurrentDictionary<Guid, ExecutionAssignmentResponse> _running = new();
         public ConcurrentQueue<HttpStatusCode> WaitStatuses { get; } = new();
@@ -438,7 +438,8 @@ public sealed partial class TaskForgeWorkerTests
             }
 
             Assert.Equal(HttpMethod.Post, request.Method);
-            using JsonDocument document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+            string rawBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using JsonDocument document = JsonDocument.Parse(rawBody);
             JsonElement body = document.RootElement.Clone();
             if (request.RequestUri!.AbsolutePath == "/api/executions/wait")
             {
@@ -464,7 +465,13 @@ public sealed partial class TaskForgeWorkerTests
             }
 
             Interlocked.Increment(ref ReportCount);
-            Reports.Writer.TryWrite(new(request.RequestUri.AbsolutePath, body));
+            Report report = new(request.RequestUri.AbsolutePath, body, rawBody);
+            Reports.Writer.TryWrite(report);
+            if (SendReport is not null)
+            {
+                return await SendReport(report, cancellationToken);
+            }
+
             return Json("{\"retryCount\":999}", ReportStatuses.TryDequeue(out HttpStatusCode reportStatus) ? reportStatus : HttpStatusCode.OK);
         }
 

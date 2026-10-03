@@ -6,6 +6,7 @@ public sealed record TaskForgeWorkerOptions
     public int WaitSeconds { get; init; } = 20;
     public TimeSpan NoWorkDelay { get; init; } = TimeSpan.FromMilliseconds(250);
     public TimeSpan TransportErrorDelay { get; init; } = TimeSpan.FromSeconds(1);
+    public int ReportRetryCount { get; init; } = 3;
     public TimeSpan StatusPollInterval { get; init; } = TimeSpan.FromSeconds(1);
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
@@ -14,6 +15,8 @@ public sealed record TaskForgeWorkerOptions
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(SlotCount);
         ArgumentOutOfRangeException.ThrowIfNegative(WaitSeconds);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(WaitSeconds, 30);
+        ArgumentOutOfRangeException.ThrowIfNegative(ReportRetryCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(ReportRetryCount, 100);
         ValidateDelay(NoWorkDelay, nameof(NoWorkDelay));
         ValidateDelay(TransportErrorDelay, nameof(TransportErrorDelay));
         ValidateDelay(StatusPollInterval, nameof(StatusPollInterval));

@@ -162,16 +162,47 @@ public sealed class TaskForgeWorker : BackgroundService
             return;
         }
 
+        CompleteExecutionRequest completion = new(assignment.WorkerId, result);
+        await ReportOutcomeAsync(assignment, token => failure is null
+            ? _client.CompleteAsync(assignment.JobId, assignment.AttemptId, completion, token)
+            : _client.FailAsync(assignment.JobId, assignment.AttemptId, failure, token), deadline.Token, stoppingToken).ConfigureAwait(false);
+    }
+
+    private async Task ReportOutcomeAsync(ExecutionAssignmentResponse assignment, Func<CancellationToken, Task<JobResponse>> report, CancellationToken deadlineToken, CancellationToken stoppingToken)
+    {
+        using CancellationTokenSource delivery = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, deadlineToken);
         try
         {
-            if (failure is null)
+            for (int retry = 0; retry <= _options.ReportRetryCount; retry++)
             {
-                await _client.CompleteAsync(assignment.JobId, assignment.AttemptId, new(assignment.WorkerId, result), stoppingToken).ConfigureAwait(false);
+                if (Volatile.Read(ref _stopRequested) != 0)
+                {
+                    return;
+                }
+
+                CancellationToken reportToken = retry == 0 && deadlineToken.IsCancellationRequested ? stoppingToken : delivery.Token;
+                reportToken.ThrowIfCancellationRequested();
+                try
+                {
+                    await report(reportToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception exception) when (IsTransportFailure(exception) || exception is IOException)
+                {
+                    if (retry == _options.ReportRetryCount || deadlineToken.IsCancellationRequested)
+                    {
+                        _logger.LogWarning(exception, "TaskForge report delivery ended without acknowledgement for job {JobId}, attempt {AttemptId}. Server recovery remains authoritative.", assignment.JobId, assignment.AttemptId);
+                        return;
+                    }
+
+                    _logger.LogWarning(exception, "TaskForge report delivery failed for job {JobId}, attempt {AttemptId}. Retrying the same outcome after a transport delay ({Retry}/{Limit}).", assignment.JobId, assignment.AttemptId, retry + 1, _options.ReportRetryCount);
+                    await Task.Delay(_options.TransportErrorDelay, _timeProvider, delivery.Token).ConfigureAwait(false);
+                }
             }
-            else
-            {
-                await _client.FailAsync(assignment.JobId, assignment.AttemptId, failure, stoppingToken).ConfigureAwait(false);
-            }
+        }
+        catch (OperationCanceledException) when (deadlineToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogWarning("TaskForge report delivery reached the deadline for job {JobId}, attempt {AttemptId}. Server recovery remains authoritative.", assignment.JobId, assignment.AttemptId);
         }
         catch (TaskForgeApiException exception) when (exception.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
         {
