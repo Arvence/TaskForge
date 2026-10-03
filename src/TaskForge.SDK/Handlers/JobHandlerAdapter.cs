@@ -2,6 +2,8 @@ using System.Text.Json;
 
 using Microsoft.Extensions.DependencyInjection;
 
+using TaskForge.SDK.Execution;
+
 namespace TaskForge.SDK.Handlers;
 
 internal abstract class JobHandlerAdapter
@@ -13,14 +15,14 @@ internal abstract class JobHandlerAdapter
     };
 
     public abstract Type HandlerType { get; }
-    public abstract Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, CancellationToken cancellationToken);
+    public abstract Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, JobExecutionContext? context, CancellationToken cancellationToken);
 }
 
 internal sealed class JobHandlerAdapter<TPayload, THandler>(string jobType) : JobHandlerAdapter where TPayload : notnull where THandler : class, IJobHandler<TPayload>
 {
     public override Type HandlerType => typeof(THandler);
 
-    public override async Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, CancellationToken cancellationToken)
+    public override async Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, JobExecutionContext? context, CancellationToken cancellationToken)
     {
         TPayload model;
         try
@@ -39,6 +41,7 @@ internal sealed class JobHandlerAdapter<TPayload, THandler>(string jobType) : Jo
 
         cancellationToken.ThrowIfCancellationRequested();
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+        scope.ServiceProvider.GetRequiredService<JobExecutionScope>().Context = context;
         THandler handler = scope.ServiceProvider.GetRequiredService<THandler>();
         JsonElement? result = await handler.HandleAsync(model, cancellationToken).ConfigureAwait(false);
         try

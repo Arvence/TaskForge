@@ -3,6 +3,8 @@ using System.Collections.Frozen;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using TaskForge.SDK.Execution;
+
 namespace TaskForge.SDK.Handlers;
 
 public static class JobHandlerServiceCollectionExtensions
@@ -33,6 +35,9 @@ public static class JobHandlerServiceCollectionExtensions
             services.TryAdd(ServiceDescriptor.Scoped(handlerType, handlerType));
         }
 
+        services.AddScoped<JobExecutionScope>();
+        services.AddScoped<JobExecutionContext>(provider => provider.GetRequiredService<JobExecutionScope>().Context
+            ?? throw new InvalidOperationException("JobExecutionContext requires an execution assignment. Invoke the registry with ExecuteAsync(assignment, cancellationToken)."));
         services.AddSingleton(provider => new JobHandlerRegistry(provider.GetRequiredService<IServiceScopeFactory>(), handlers));
         return services;
     }

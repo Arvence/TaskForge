@@ -131,7 +131,7 @@ public sealed class TaskForgeWorker : BackgroundService
         FailExecutionRequest? failure = null;
         try
         {
-            result = await _registry.ExecuteAsync(assignment.Type, assignment.Payload, execution.Token).ConfigureAwait(false);
+            result = await _registry.ExecuteAsync(assignment, execution.Token).ConfigureAwait(false);
             ValidateResult(result);
         }
         catch (OperationCanceledException) when (execution.IsCancellationRequested)
