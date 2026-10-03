@@ -13,6 +13,7 @@ persistent state, retries, timeouts, cancellation, and execution history.
 - Idempotent submission, optimistic concurrency, and expired-lease recovery.
 - Filtered and paginated job lists, execution attempt history, and job statistics.
 - Optional independent .NET HTTP client in `TaskForge.SDK`.
+- Local sample client with client-owned expense-report and HTTP handlers.
 - Docker Compose setup, automated tests, and GitHub Actions CI.
 
 ## Quick Start
@@ -544,7 +545,8 @@ it is `null` when neither outcome exists.
 ## Optional .NET Client
 
 `src/TaskForge.SDK` targets .NET 10 and has no server project references. Its
-handler registry uses `Microsoft.Extensions.DependencyInjection.Abstractions`.
+handler registry and optional worker use the Microsoft.Extensions dependency
+injection and hosting abstractions packages.
 Reference `TaskForge.SDK.csproj` from a .NET application to use the typed HTTP
 client. Direct HTTP clients remain supported.
 
@@ -603,8 +605,8 @@ Responses without a code retain their original detail/message and a null code;
 non-JSON errors still preserve the raw response body. Transport errors remain
 `HttpRequestException`.
 
-The client sends each request once. It contains no handler loop, business execution
-retry logic, or automatic HTTP retries. An application executes only assignments
+`TaskForgeClient` sends each request once. The optional hosted worker described
+below automates waiting and invocation. An application executes only assignments
 returned by the server; server retry counts do not instruct it to rerun a handler.
 
 ### Client-owned handler registration
@@ -645,7 +647,7 @@ ExecutionAssignmentResponse? assignment = await client.WaitAsync(
 
 if (assignment is not null)
 {
-    JsonElement? result = await registry.ExecuteAsync(assignment.Type, assignment.Payload);
+    JsonElement? result = await registry.ExecuteAsync(assignment);
     await client.CompleteAsync(assignment.JobId, assignment.AttemptId,
         new CompleteExecutionRequest(assignment.WorkerId, result));
 }
@@ -658,6 +660,17 @@ registrations are rejected. Keep those handler lifetimes when configuring DI.
 Handlers and scoped dependencies are disposed before the call returns, including
 on failure or cancellation. JSON results are cloned before scope disposal.
 
+Handlers and their scoped dependencies can accept `JobExecutionContext` from
+`TaskForge.SDK.Execution` through constructor injection. It is an immutable snapshot
+of the assignment's `JobId`, `ApplicationId`, `AttemptId`, `AttemptNumber`, `WorkerId`,
+`JobType`, `StartedAtUtc`, and `DeadlineAtUtc`. The SDK initializes it before creating
+the handler. Each invocation has its own context, including concurrent slots.
+The hosted worker supplies it automatically; manual callers use
+`registry.ExecuteAsync(assignment, cancellationToken)` as above. The existing
+`ExecuteAsync(jobType, payload, cancellationToken)` overload remains available for
+payload-only handlers. Resolving a context through that overload fails clearly
+because no execution identity was supplied.
+
 Payload deserialization uses System.Text.Json web defaults, respects required
 constructor parameters and nullable annotations, and honors DTO serialization
 attributes. Use required properties or required constructor parameters for fields
@@ -668,8 +681,274 @@ payload type and underlying `JsonException`. Missing mappings throw
 application-owned.
 
 The registry performs no HTTP requests or automatic result reporting. The caller
-chooses when to invoke a returned assignment and report Complete or Fail. There is
-no background polling loop, SQL mapping storage, or assembly upload.
+can invoke a returned assignment and report Complete or Fail directly, or opt into
+the hosted worker below. Mappings stay in the client process.
+
+### Optional hosted execution
+
+Register `AddTaskForgeWorker` in a .NET host to automate wait, local invocation,
+and Complete/Fail reporting. Register one `TaskForgeClient` and the handler registry
+in the same service collection. A console application using this example also
+needs the `Microsoft.Extensions.Hosting` package:
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using TaskForge.SDK;
+using TaskForge.SDK.Execution;
+using TaskForge.SDK.Handlers;
+
+HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
+using HttpClient http = new() { Timeout = Timeout.InfiniteTimeSpan };
+builder.Services.AddSingleton(new TaskForgeClient(http, new TaskForgeClientOptions
+{
+    BaseUrl = new Uri("http://localhost:8275"),
+    ApplicationId = "a-project"
+}));
+builder.Services.AddTaskForgeHandlers(handlers => handlers
+    .Register<SendEmailPayload, SendEmailHandler>("send-email"));
+builder.Services.AddTaskForgeWorker();
+
+using IHost host = builder.Build();
+await host.RunAsync();
+```
+
+`TaskForgeWorkerOptions` defaults to one execution slot, 20-second waits, a
+250-millisecond delay after `204 No Content`, and a one-second delay after transient
+communication failures. Pass an options record to `AddTaskForgeWorker` to change
+`SlotCount`, `WaitSeconds` (0–30), `NoWorkDelay`, or `TransportErrorDelay`. Cancellation
+coordination adds `StatusPollInterval` (one second by default) and `ShutdownTimeout`
+(ten seconds by default). `ReportRetryCount` allows 0–100 additional outcome delivery
+attempts and defaults to three. All durations must be positive. The worker requires 1–100
+registered types, matching the wait protocol.
+
+Each startup creates a random session identifier; each slot appends its own number
+to form a worker ID. The slot waits using the client's configured application and
+the registry's type names. It invokes at most one handler at a time, disposes that
+execution scope, and reports using the assignment's exact job, attempt, and worker
+IDs before waiting again. Application or worker identity mismatches stop the hosted
+worker and cancel its other slots without invoking or reporting the bad assignment.
+
+Handlers retain the `Task<JsonElement?>` contract. The worker serializes the returned
+JSON before reporting, checks the server's compact 4,000-character limit, and reports
+local failures with these codes:
+
+| Local failure | Reported error code |
+| --- | --- |
+| Payload deserialization | `InvalidPayload` |
+| Missing handler mapping | `UnsupportedJobType` |
+| `NonRetryableJobException` from client code | `NonRetryableJobException` |
+| Unreadable, undefined, or oversized result; `JobResultSerializationException` | `ResultSerializationFailed` |
+| Other handler, activation, or scope-disposal exception | Exception type name, such as `InvalidOperationException` |
+
+The first three codes use the server's existing permanent-failure policy. All other
+codes remain subject to its retry budget. Error codes and messages fit the server's
+100- and 4,000-character limits; result JSON is never truncated. A handler that
+serializes a business object itself can wrap conversion errors in
+`JobResultSerializationException` to classify them as result failures.
+
+The worker does not resubmit jobs, calculate business retry times, or interpret
+returned retry counts as instructions to invoke again. Only a new assignment can
+trigger another execution. Communication failures do not become handler failures:
+a failed Complete request never causes a contradictory Fail request. Definitive
+`404`/`409` report rejections are logged and the slot resumes waiting. Network
+failures, request timeouts, `408`, `429`, and `5xx` responses use the transport delay.
+For waits, the worker starts another wait after that delay; it does not replay an
+acquisition through an HTTP retry policy. Other protocol/configuration failures,
+including `400`, fault the hosted service and follow the application's host failure
+policy without retrying the rejected request.
+
+### Outcome delivery retries
+
+After a handler exits, its slot retains the exact Complete or Fail request in memory
+until acknowledgement, definitive rejection, or the delivery limit. A lost response,
+temporary connection failure, response-stream I/O failure, request timeout, `408`,
+`429`, or `5xx` triggers at most `ReportRetryCount` additional deliveries, separated
+by `TransportErrorDelay`. Every delivery uses the same application, job, attempt,
+worker, and outcome body. An acknowledged duplicate is success, even if a duplicate
+Fail response describes a newer job state. The returned retry count never tells the
+SDK to invoke a handler again.
+
+The slot does not acquire more work during delivery retries, and the disposed handler
+scope is not recreated. A failed Complete never becomes a business Fail. `404` and
+`409` end reporting, including stale, timed-out, cancelled, or conflicting attempts.
+The original assignment deadline cancels retry backoff and in-flight delivery;
+shutdown also stops delivery. A handler that ignored cancellation and finished after
+its deadline can still send its original late report once, as described below, but
+that report is not retried.
+
+Transport backoff is independent of the server's job retry schedule and consumes no
+additional job retry budget. When delivery retries are exhausted, the slot resumes
+waiting for server assignments. If the report was accepted, persisted state remains
+authoritative; otherwise server timeout/recovery can redistribute the job. Pending
+reports are lost on process exit. There is no durable client outbox, and business
+handlers must still tolerate re-execution in a later server-assigned attempt.
+
+### Cancellation, deadlines, and shutdown
+
+The handler receives a linked token covering host shutdown, the assignment's fixed
+`DeadlineAtUtc`, and cancellation observed through `GET /api/jobs/{jobId}`. Status
+polling runs alongside the handler at `StatusPollInterval`. It also stops local work
+when the job no longer has the assignment's processing owner and start time. These
+are read-only requests: they do not renew leases or extend deadlines. Transient read
+failures are logged and polling continues while the original deadline remains in
+effect; an in-flight read is cancelled when local execution stops.
+
+The worker calculates the remaining UTC deadline once when accepting the assignment
+and schedules a one-shot timer. Delivery time already consumed is excluded. An
+expired assignment is not invoked. The local budget is capped by the assignment's
+original duration and `TimeoutSeconds`, so a slow local clock cannot grant an
+unbounded extension. Subsequent wall-clock changes do not restart the timer, and
+lease grace is never execution time. Client clocks should be synchronized: clock
+skew can make local cancellation early or late, while the server's clock decides whether
+a report is timely.
+
+When a handler cooperates with this token and throws `OperationCanceledException`,
+the SDK disposes its scope without inventing a timeout status or business failure.
+Server cancellation, deadline maintenance, and recovery determine persisted state.
+Cancellation of an unrelated operation inside a handler still follows ordinary
+failure reporting when the execution token has not been cancelled.
+
+Host shutdown immediately stops new waits and cancels active execution tokens.
+`StopAsync` waits up to `ShutdownTimeout`, or the host's shorter shutdown budget.
+It does not report shutdown as a business failure. If reporting is impossible,
+the server recovers unreported work through its existing deadline/recovery paths.
+
+A handler that ignores cancellation keeps its slot and DI scope until its actual
+invocation exits, even if bounded shutdown waiting has already returned. The SDK
+does not force thread termination or start overlapping work in that slot. While
+the process remains alive, resources are disposed when the handler exits. Outside
+host shutdown, an eventual result or failure is reported with the original attempt
+identity; the server rejects timed-out, cancelled, or stale reports normally. During
+shutdown, the SDK does not attempt a late report or acquire another assignment.
+
+## Local Sample Client
+
+`samples/TaskForge.SampleClient` is a separate .NET 10 executable. Its only project
+reference is `TaskForge.SDK`; business handlers and HTTP options live in the sample.
+The API image contains neither the sample nor the SDK and cannot execute these
+handlers. The sample defaults to application `a-project` and API
+`http://localhost:8275`.
+
+Its report wrapper logs the application, job, attempt, and worker from the scoped
+execution context. The deterministic report result remains independent of these
+identifiers, so repeated attempts can produce identical business output.
+
+With the local stack running, build the solution and start the client in a terminal:
+
+```powershell
+docker compose up --build -d --wait --wait-timeout 180
+dotnet build TaskForge.sln --configuration Release
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run
+```
+
+In another terminal, use the application's submission commands:
+
+```powershell
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-http http://localhost:8275/api/health
+```
+
+Each submission prints JSON containing the job ID. `submit-report` uses the expense
+example above and produces a total of `190.25`; an optional JSON file supplies a
+different payload containing `title` and `entries`. `submit-http` submits a GET.
+Submission commands exit without starting a worker. Read the result and history
+using `GET /api/jobs/{id}` and `GET /api/jobs/{id}/attempts`.
+
+Stop the `run` process with Ctrl+C, then submit another job. With no other compatible
+client running, it stays `Queued` with an empty attempt history until a client starts.
+When submitting the API examples above directly, set `applicationId` to `a-project`
+to route them to this sample. Starting the sample also acquires any existing eligible
+jobs for that application and its two registered types.
+
+Configuration is loaded from `clientsettings.json` beside the executable. Edit
+`samples/TaskForge.SampleClient/clientsettings.json` and rebuild, or override values
+with `TaskForge__BaseUrl`, `TaskForge__ApplicationId`, and
+`HttpRequestJobs__AllowedHosts__0` environment variables. Handler mappings are
+registered once at startup. The optional SDK worker owns waiting, scoped invocation,
+cancellation, and bounded outcome delivery.
+
+The report handler groups trimmed categories using ordinal, case-sensitive order
+and exact decimal totals. It accepts 1–1,000 entries, titles up to 120 characters,
+categories up to 80 characters, and amounts from 0 to 1,000,000,000,000 with at most
+two decimal places. Its compact, escaped JSON must fit the server's 4,000-character
+result limit. An oversized result produces a permanent failure with guidance to
+reduce the report; results are never truncated. It produces structured JSON.
+
+The HTTP handler preserves the original host allowlist and failure classification.
+Defaults allow only `localhost` and `127.0.0.1`; automatic redirects and cookies are
+disabled. It supports GET, POST, PUT, PATCH, and DELETE, defaults omitted methods to
+POST, and returns only HTTP status metadata. HTTP `408`, `429`, and `5xx` failures
+use the server's ordinary retry policy; other non-success statuses and invalid
+requests are permanent failures. Cancellation reaches the outgoing request. Any
+side effects must tolerate a later server-assigned attempt; outcome delivery retries
+do not repeat the HTTP operation. The sample does not implement email delivery.
+
+### Independent applications and competing clients
+
+Use separate terminals for the application instances. In the first terminal:
+
+```powershell
+$env:TaskForge__ApplicationId = "a-project"
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run
+```
+
+In the second terminal:
+
+```powershell
+$env:TaskForge__ApplicationId = "b-project"
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run
+```
+
+Run the first command in a third terminal to add another `a-project` worker. Each
+process creates its own worker identity. All register `generate-report` locally;
+the server distributes work by application and supported type. The two `a-project`
+instances compete for assignments, and `b-project` receives its own jobs. Application
+keys are routing identifiers; the API's trusted-network limitations still apply.
+
+In a submission terminal, select the application explicitly for each submission:
+
+```powershell
+$env:TaskForge__ApplicationId = "a-project"
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report
+$env:TaskForge__ApplicationId = "b-project"
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report
+```
+
+Compare the printed job IDs with each worker's report logs and the jobs' attempt
+histories. Submission remains an application decision. Stop the workers with Ctrl+C
+when finished.
+
+### Business-side retry safety
+
+`JobId` stays the same across retries; each new assignment has a new `AttemptId`
+and an incremented `AttemptNumber`. A business operation intended to occur once per
+logical job can use a key such as
+`$"{context.ApplicationId}:reserve:{context.JobId:D}"`. Using `AttemptId` in that
+key allows the operation to repeat on the next attempt. Replay and fresh submission
+create new job IDs; use an application-owned operation ID from the payload when the
+business identity must span multiple submitted jobs.
+
+The business receiver must enforce its key together with the effect, through an
+atomic record in its own storage or an idempotent downstream API. Its record must
+survive relevant retries and process restarts. Checking an in-memory flag in a
+worker cannot provide that protection across independent client processes.
+
+Outcome transport retries resend the same Complete/Fail body without invoking the
+handler again. A process can still exit after an external effect and before its
+outcome reaches TaskForge. Server timeout recovery then permits a new attempt,
+which may repeat that effect. A handler that ignores cancellation can also overlap
+a replacement attempt. TaskForge does not guarantee exactly-once external side
+effects or coordinate a distributed transaction with the business receiver.
+
+The SDK integration tests run separate sample processes for two applications and
+two instances of one application. Other tests give the same type name different
+local results, exercise competing acquisition, and kill a real sample process after
+report computation but before Complete delivery. The replacement executes the
+deterministic report again with identical output and a new attempt ID. A separate
+in-memory receiver test double models atomic deduplication: an application/job key
+records one effect across two attempts, while an attempt-based key records two.
+The test double demonstrates the key choice and is not a durable receiver.
 
 ## Debugging Console
 
