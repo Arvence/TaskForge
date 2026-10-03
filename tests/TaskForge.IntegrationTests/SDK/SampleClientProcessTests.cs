@@ -44,7 +44,7 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
         await using SampleProcess firstA = new(proxy.Address, "a-project");
         await using SampleProcess secondA = new(proxy.Address, "a-project");
         await using SampleProcess clientB = new(proxy.Address, "b-project");
-        await WaitUntilAsync(() => proxy.Workers.Count == 3, deadline.Token);
+        await WaitUntilAsync(() => proxy.Workers.Count == 3, deadline.Token, firstA, secondA, clientB);
         TaskForgeClient a = Client(http, "a-project");
         TaskForgeClient b = Client(http, "b-project");
         JobResponse[] jobs =
@@ -56,7 +56,7 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
         List<JobAttemptResponse> attempts = [];
         foreach (JobResponse job in jobs)
         {
-            JobResponse completed = await WaitForCompletedAsync(a, job.Id, deadline.Token);
+            JobResponse completed = await WaitForCompletedAsync(a, job.Id, deadline.Token, firstA, secondA, clientB);
             JobAttemptResponse attempt = Assert.Single(await a.GetAttemptsAsync(job.Id, deadline.Token));
             Assert.Equal(JobAttemptOutcome.Succeeded, attempt.Outcome);
             Assert.Equal(job.ApplicationId, proxy.Workers[attempt.WorkerId]);
@@ -97,6 +97,7 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(45));
         JobResponse job = await client.SubmitAsync(new("generate-report", JsonSerializer.SerializeToElement(SampleJobs.ExampleReport(), new JsonSerializerOptions(JsonSerializerDefaults.Web)), MaxRetries: 1, TimeoutSeconds: 4), cancellationToken: deadline.Token);
         await using SampleProcess original = new(proxy.Address, "a-project");
+        await WaitUntilAsync(() => withheld.Task.IsCompleted, deadline.Token, original);
         Completion firstReport = await withheld.Task.WaitAsync(deadline.Token);
         JobResponse processing = await client.GetJobAsync(job.Id, deadline.Token);
         Assert.Equal(JobStatus.Processing, processing.Status);
@@ -105,7 +106,7 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
         await original.StopAsync();
 
         await using SampleProcess replacement = new(proxy.Address, "a-project");
-        JobResponse completed = await WaitForCompletedAsync(client, job.Id, deadline.Token);
+        JobResponse completed = await WaitForCompletedAsync(client, job.Id, deadline.Token, replacement);
         IReadOnlyList<JobAttemptResponse> history = await client.GetAttemptsAsync(job.Id, deadline.Token);
         Completion[] reports = proxy.Reports.ToArray();
         Assert.Equal(2, reports.Length);
@@ -130,18 +131,28 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
 
     private static TaskForgeClient Client(HttpClient http, string applicationId) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId });
 
-    private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken cancellationToken)
+    private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken cancellationToken, params SampleProcess[] processes)
     {
         while (!condition())
         {
+            foreach (SampleProcess process in processes)
+            {
+                await process.ThrowIfExitedAsync();
+            }
+
             await Task.Delay(20, cancellationToken);
         }
     }
 
-    private static async Task<JobResponse> WaitForCompletedAsync(TaskForgeClient client, Guid jobId, CancellationToken cancellationToken)
+    private static async Task<JobResponse> WaitForCompletedAsync(TaskForgeClient client, Guid jobId, CancellationToken cancellationToken, params SampleProcess[] processes)
     {
         while (true)
         {
+            foreach (SampleProcess process in processes)
+            {
+                await process.ThrowIfExitedAsync();
+            }
+
             JobResponse job = await client.GetJobAsync(jobId, cancellationToken);
             if (job.Status == JobStatus.Completed)
             {
@@ -163,15 +174,18 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
 
         public SampleProcess(string baseUrl, string applicationId)
         {
+            string directory = Path.Combine(AppContext.BaseDirectory, "sample-client");
+            string assembly = Path.Combine(directory, "TaskForge.SampleClient.dll");
+            Assert.True(File.Exists(assembly), $"Sample client output is missing at {assembly}. Build the integration test project before running process tests.");
             ProcessStartInfo start = new(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                WorkingDirectory = AppContext.BaseDirectory
+                WorkingDirectory = directory
             };
-            start.ArgumentList.Add(typeof(SampleJobs).Assembly.Location);
+            start.ArgumentList.Add(assembly);
             start.ArgumentList.Add("run");
             start.Environment["TaskForge__BaseUrl"] = baseUrl;
             start.Environment["TaskForge__ApplicationId"] = applicationId;
@@ -181,23 +195,43 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
             _errors = _process.StandardError.ReadToEndAsync();
         }
 
+        public async Task ThrowIfExitedAsync()
+        {
+            if (_process.HasExited)
+            {
+                await Task.WhenAll(Output, _errors).WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Fail($"Sample client exited unexpectedly with code {_process.ExitCode}.{Environment.NewLine}Standard output:{Environment.NewLine}{await Output}{Environment.NewLine}Standard error:{Environment.NewLine}{await _errors}");
+            }
+        }
+
         public async Task StopAsync()
         {
-            if (!_process.HasExited)
+            await StopProcessAsync();
+            Assert.True(string.IsNullOrWhiteSpace(await _errors), await _errors);
+        }
+
+        private async Task StopProcessAsync()
+        {
+            try
             {
-                _process.Kill(entireProcessTree: true);
+                if (!_process.HasExited)
+                {
+                    _process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException) when (_process.HasExited)
+            {
             }
 
             await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             await Task.WhenAll(Output, _errors).WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.True(string.IsNullOrWhiteSpace(await _errors), await _errors);
         }
 
         public async ValueTask DisposeAsync()
         {
             try
             {
-                await StopAsync();
+                await StopProcessAsync();
             }
             finally
             {

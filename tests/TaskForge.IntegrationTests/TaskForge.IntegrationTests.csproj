@@ -28,4 +28,8 @@
     <ProjectReference Include="..\..\src\TaskForge.Infrastructure\TaskForge.Infrastructure.csproj" />
   </ItemGroup>
 
+  <Target Name="PublishSampleClientForProcessTests" AfterTargets="Build">
+    <MSBuild Projects="../../samples/TaskForge.SampleClient/TaskForge.SampleClient.csproj" Targets="Publish" Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);NoBuild=true;PublishDir=$(TargetDir)sample-client/" />
+  </Target>
+
 </Project>
