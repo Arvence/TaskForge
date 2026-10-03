@@ -8,6 +8,7 @@ COPY ["src/TaskForge.Infrastructure/TaskForge.Infrastructure.csproj", "src/TaskF
 COPY ["src/TaskForge.Api/TaskForge.Api.csproj", "src/TaskForge.Api/"]
 COPY ["src/TaskForge.Debugging/TaskForge.Debugging.csproj", "src/TaskForge.Debugging/"]
 COPY ["src/TaskForge.SDK/TaskForge.SDK.csproj", "src/TaskForge.SDK/"]
+COPY ["samples/TaskForge.SampleClient/TaskForge.SampleClient.csproj", "samples/TaskForge.SampleClient/"]
 COPY ["tests/TaskForge.UnitTests/TaskForge.UnitTests.csproj", "tests/TaskForge.UnitTests/"]
 COPY ["tests/TaskForge.IntegrationTests/TaskForge.IntegrationTests.csproj", "tests/TaskForge.IntegrationTests/"]
 RUN dotnet restore TaskForge.sln

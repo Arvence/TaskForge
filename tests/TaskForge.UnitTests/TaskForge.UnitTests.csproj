@@ -20,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\samples\TaskForge.SampleClient\TaskForge.SampleClient.csproj" />
     <ProjectReference Include="..\..\src\TaskForge.SDK\TaskForge.SDK.csproj" />
     <ProjectReference Include="..\..\src\TaskForge.Application\TaskForge.Application.csproj" />
     <ProjectReference Include="..\..\src\TaskForge.Debugging\TaskForge.Debugging.csproj" />
