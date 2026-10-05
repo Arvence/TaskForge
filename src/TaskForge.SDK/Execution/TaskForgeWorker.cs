@@ -187,7 +187,7 @@ public sealed class TaskForgeWorker : BackgroundService
                     await report(reportToken).ConfigureAwait(false);
                     return;
                 }
-                catch (Exception exception) when (IsTransportFailure(exception) || exception is IOException)
+                catch (Exception exception) when (IsTransportFailure(exception))
                 {
                     if (retry == _options.ReportRetryCount || deadlineToken.IsCancellationRequested)
                     {
@@ -277,7 +277,7 @@ public sealed class TaskForgeWorker : BackgroundService
     private static bool IsTransportFailure(Exception exception) => exception switch
     {
         TaskForgeApiException api => api.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || (int?)api.StatusCode >= 500,
-        HttpRequestException or TimeoutException => true,
+        HttpRequestException or TimeoutException or IOException => true,
         _ => false
     };
 }

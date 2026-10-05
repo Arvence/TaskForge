@@ -124,6 +124,7 @@ public sealed partial class TaskForgeWorkerTests
     [InlineData("http")]
     [InlineData("network")]
     [InlineData("timeout")]
+    [InlineData("stream")]
     public async Task Polling_failures_do_not_cancel_early_or_extend_the_original_deadline(string failure)
     {
         ObservableClock clock = new();
@@ -132,6 +133,7 @@ public sealed partial class TaskForgeWorkerTests
         {
             "network" => throw new HttpRequestException("Unavailable."),
             "timeout" => throw new TimeoutException("Timed out."),
+            "stream" => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new InterruptedResponseStream()) }),
             _ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))
         };
         RunningHandler handler = await StartLongExecutionAsync(fixture, Assignment.Create() with { TimeoutSeconds = 4 });

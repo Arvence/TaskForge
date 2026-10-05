@@ -20,6 +20,8 @@ public sealed partial class TaskForgeWorkerTests
     [InlineData(true, 500)]
     [InlineData(false, -1)]
     [InlineData(true, -2)]
+    [InlineData(false, -3)]
+    [InlineData(true, -3)]
     public async Task Transient_delivery_failure_repeats_the_exact_outcome_without_invoking_the_handler_again(bool failure, int response)
     {
         await using WorkerFixture fixture = new();
@@ -41,6 +43,7 @@ public sealed partial class TaskForgeWorkerTests
                 0 => throw new HttpRequestException("Connection lost."),
                 -1 => throw new TimeoutException("Acknowledgement timed out."),
                 -2 => throw new IOException("Response stream disconnected."),
+                -3 => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new InterruptedResponseStream()) }),
                 _ => Task.FromResult(DeliveryResponse((HttpStatusCode)response))
             };
         };

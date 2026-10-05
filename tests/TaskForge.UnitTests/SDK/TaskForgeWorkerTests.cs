@@ -108,6 +108,7 @@ public sealed partial class TaskForgeWorkerTests
     [InlineData("handler", "InvalidOperationException", 1)]
     [InlineData("permanent", "NonRetryableJobException", 1)]
     [InlineData("handler-json", "JsonException", 1)]
+    [InlineData("handler-io", "IOException", 1)]
     [InlineData("handler-cancel", "OperationCanceledException", 1)]
     [InlineData("undefined", "ResultSerializationFailed", 1)]
     [InlineData("disposed", "ResultSerializationFailed", 1)]
@@ -131,6 +132,7 @@ public sealed partial class TaskForgeWorkerTests
             "handler" => throw new InvalidOperationException("Handler failed."),
             "permanent" => throw new NonRetryableJobException("Business input cannot be processed."),
             "handler-json" => throw new JsonException("Handler JSON operation failed."),
+            "handler-io" => throw new IOException("Handler file operation failed."),
             "handler-cancel" => throw new OperationCanceledException("Local dependency cancelled."),
             "undefined" => Task.FromResult<JsonElement?>(default(JsonElement)),
             "disposed" => Task.FromResult<JsonElement?>(DisposedResult()),
@@ -262,11 +264,20 @@ public sealed partial class TaskForgeWorkerTests
         Assert.Equal(2, fixture.Server.ReportCount);
     }
 
-    [Fact]
-    public async Task Transport_failure_during_wait_is_followed_only_by_another_wait()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Transport_failure_during_wait_is_followed_only_by_another_wait(bool interruptedStream)
     {
         await using WorkerFixture fixture = new();
-        fixture.Server.WaitStatuses.Enqueue(HttpStatusCode.ServiceUnavailable);
+        if (interruptedStream)
+        {
+            fixture.Server.WaitResponses.Enqueue(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new InterruptedResponseStream()) });
+        }
+        else
+        {
+            fixture.Server.WaitStatuses.Enqueue(HttpStatusCode.ServiceUnavailable);
+        }
         fixture.Server.Assignments.Writer.TryWrite(Assignment.Create());
         await fixture.Worker.StartAsync(default);
         await ReadAsync(fixture.Server.Reports.Reader);
@@ -410,6 +421,12 @@ public sealed partial class TaskForgeWorkerTests
 
     private sealed record Report(string Path, JsonElement Body, string RawBody);
 
+    private sealed class InterruptedResponseStream : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(new IOException("Response stream disconnected."));
+    }
+
     private sealed class ScriptedServer : HttpMessageHandler
     {
         public Channel<Assignment?> Assignments { get; } = Channel.CreateUnbounded<Assignment?>();
@@ -421,6 +438,7 @@ public sealed partial class TaskForgeWorkerTests
         public TimeProvider Clock { get; set; } = TimeProvider.System;
         private readonly ConcurrentDictionary<Guid, ExecutionAssignmentResponse> _running = new();
         public ConcurrentQueue<HttpStatusCode> WaitStatuses { get; } = new();
+        public ConcurrentQueue<HttpResponseMessage> WaitResponses { get; } = new();
         public ConcurrentQueue<HttpStatusCode> ReportStatuses { get; } = new();
         public int WaitCount;
         public int ReportCount;
@@ -445,6 +463,11 @@ public sealed partial class TaskForgeWorkerTests
             {
                 Interlocked.Increment(ref WaitCount);
                 Waits.Writer.TryWrite(body);
+                if (WaitResponses.TryDequeue(out HttpResponseMessage? waitResponse))
+                {
+                    return waitResponse;
+                }
+
                 if (WaitStatuses.TryDequeue(out HttpStatusCode status))
                 {
                     return Json("{}", status);
