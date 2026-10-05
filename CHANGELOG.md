@@ -1,12 +1,26 @@
 # Changelog
 
-Notable changes to TaskForge are recorded here. Unreleased changes follow the
-SQLite-based `v1.0.0` release and are not included in that tag.
+Notable changes to TaskForge are recorded here. The 2.0.0 candidate follows the
+historical SQLite-based `v1.0.0` tag. Preparing this candidate does not publish a
+package, tag, or GitHub release.
 
-## Unreleased
+## 2.0.0 - Release candidate
 
 ### Added
 
+- Independent .NET 10 SDK with typed HTTP requests, protocol errors, request
+  timeouts, and caller cancellation; no server project references are required.
+- Client-local handler registry with typed payload validation, a separate async
+  dependency-injection scope per invocation, and scoped execution identity.
+- Optional hosted SDK worker with execution slots, fixed deadlines, cooperative
+  cancellation, bounded shutdown, and retries of the same outcome report without
+  rerunning the handler.
+- Standalone sample client with expense-report and allowlisted HTTP handlers,
+  submission commands, and configuration through JSON or environment variables.
+- SDK contracts and separate-process tests for independent applications,
+  competing clients, lost acknowledgements, and recovery after client termination.
+- A reviewer walkthrough that produces a completed sample report, linked HTTP
+  and SDK references, and retained migration and release verification evidence.
 - Independent server maintenance for execution deadlines, with bounded batches,
   SQL Server time, and atomic timeout/history updates before lease grace expires.
 - Execution attempt recording with worker identifiers, timing, duration,
@@ -81,8 +95,13 @@ This update is not a drop-in replacement for the SQLite release:
   pagination metadata.
 - Include `applicationId` in submissions and execution requests. Idempotency
   keys are scoped to an application.
+- Existing SQL Server jobs receive the `legacy` application ID when the ownership
+  migration runs. Their IDs, payloads, idempotency keys, and attempt history are
+  preserved. Route compatible clients to `legacy` to finish retained work.
 - Run external execution clients with implementations for the submitted job
   types. Starting TaskForge runs server maintenance but does not execute jobs.
+- Reference `src/TaskForge.SDK/TaskForge.SDK.csproj` when using the optional SDK;
+  no TaskForge NuGet package is published as part of this candidate.
 - Update clients to use port `8275` when relying on the default configuration.
 
 The service continues to target one API instance on a trusted network.
