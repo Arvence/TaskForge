@@ -1,197 +1,154 @@
 # TaskForge
 
-TaskForge is a .NET 10 job orchestration server backed by SQL Server. It lets an
-application submit work and inspect its progress without keeping a request open
-while the work runs. External clients execute their own business code; TaskForge
-persists the jobs, assigns compatible work, and manages retries, deadlines,
-cancellation, and attempt history.
+[![CI](https://github.com/Arvence/TaskForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Arvence/TaskForge/actions/workflows/ci.yml)
 
-**Release candidate: 2.0.0.** This is a locally runnable portfolio project.
-The [changelog](CHANGELOG.md), [draft release notes](docs/release-notes.md), and
-[verification report](docs/verification.md) describe the candidate and its limits.
+TaskForge is an HTTP job orchestration server built with .NET and SQL Server.
+Applications submit background work, execute it in their own processes, and query
+its progress. TaskForge stores jobs and attempt history, assigns work to compatible
+clients, and manages retries, deadlines, and cancellation.
 
-## Features and architecture
+Use it to move work such as report generation or service requests out of an HTTP
+request while keeping a durable record of what happened. Business code stays in
+the application that owns it. Any language can integrate through HTTP; the .NET
+SDK provides a client, typed handlers, and a hosted worker.
 
-- Durable jobs and attempt history in SQL Server through EF Core.
-- Application/type routing, priorities, and guarded concurrent acquisition.
-- Capped retry backoff, permanent failures, dead-letter handling, and manual replay.
-- Fixed execution deadlines, persistent cancellation, and restart recovery.
-- Application-scoped submission idempotency and duplicate outcome handling.
-- HTTP APIs for submission, execution, inspection, statistics, and readiness.
-- Optional independent .NET SDK and a standalone sample execution client.
+## How it works
 
 ```mermaid
 flowchart LR
-    Submitter[Application] -->|Submit and inspect over HTTP| API[TaskForge server]
-    Worker[External execution client] -->|Wait and report over HTTP| API
-    Worker --> Handlers[Client-owned business handlers]
-    API --> SQL[(SQL Server)]
+    App[Application backend] -->|Submit jobs and read results| API[TaskForge API]
+    Worker[Application worker] -->|Request work and report outcomes| API
+    Worker -->|Execute| Handler[Application business code]
+    API -->|Persist jobs and attempts| SQL[(SQL Server)]
+    Maintenance[Server maintenance] -->|Expire deadlines and recover leases| SQL
 ```
 
-The server projects are `Api` (HTTP/hosting), `Application` (orchestration),
-`Domain` (lifecycle rules), and `Infrastructure` (SQL persistence). The server runs
-maintenance, with no business-handler registry or execution loop.
-`TaskForge.SDK` has no server project references. `TaskForge.SampleClient`
-references only the SDK and supplies the report and HTTP handlers. The API Docker
-image contains neither the SDK nor the sample client.
+Workers request jobs for an application ID and a set of supported types. Each
+assignment includes a job ID, attempt ID, worker ID, payload, and fixed deadline.
+The worker executes its local handler and reports success or failure. TaskForge
+never invokes application callbacks or runs business handlers inside the API.
 
-## Quick start
+- **Durable execution records:** jobs, results, errors, and individual attempts.
+- **Controlled distribution:** application/type routing, priorities, and atomic acquisition.
+- **Recovery:** capped retry backoff, timeout handling, dead-lettering, and manual replay.
+- **Safe reporting:** duplicate acknowledgments and rejection of stale or conflicting outcomes.
+- **Client integration:** plain HTTP, an independent .NET SDK, and a runnable sample client.
 
-Use Git, Docker Desktop with Compose v2 in Linux container mode, and PowerShell
-5.1 or later. Install a stable **.NET 10 SDK** to run the sample client below.
-SQL Server itself runs in Docker. For a server-only walkthrough without a local
-.NET installation, follow [plain HTTP execution](docs/http-api.md#plain-http-walkthrough).
+See [architecture and job lifecycle](docs/architecture.md) for execution semantics
+and project dependencies.
 
-Run commands from the repository root. Use two terminals for the sample walkthrough.
+## Run locally
 
-### 1. Start the server
+Requires Git, a stable **.NET 10 SDK**, Docker with Compose v2 and Linux containers,
+and PowerShell. Use Windows PowerShell 5.1 or PowerShell 7; on Linux, use PowerShell 7.
+The server runs in Docker. The sample worker runs on your host.
+
+### Start the server
 
 ```powershell
 git clone https://github.com/Arvence/TaskForge.git
 cd TaskForge
 ./setup.ps1
-Invoke-RestMethod http://localhost:8275/api/ready
 ```
 
-Setup creates `.env` from `.env.example` when necessary and prompts securely for
-a SQL Server password. Accept `Start TaskForge now? [Y/n]`. It builds the API,
-starts SQL Server, applies migrations, and waits for readiness on port `8275`.
-Expect `{"status":"Ready"}`. Setup preserves existing configuration; use the
-original password if the SQL data volume already exists.
+Setup checks Docker, creates `.env` when needed, and prompts for a SQL Server
+password. Accept `Start TaskForge now? [Y/n]` to build and start the services.
+It waits for database connectivity at [http://localhost:8275/api/ready](http://localhost:8275/api/ready).
+Existing configuration and database data are preserved.
 
-If Windows blocks the script, use
+If Windows blocks the script, run
 `powershell -NoProfile -ExecutionPolicy Bypass -File ./setup.ps1`.
+For direct Compose setup without PowerShell, see [server configuration](docs/architecture.md#server-configuration).
 
-### 2. Start an execution client
+### Start the sample worker
 
-In the first terminal:
+From the repository root, in the first terminal:
 
 ```powershell
 dotnet build TaskForge.sln --configuration Release
-$env:TaskForge__ApplicationId = 'portfolio-demo'
+$env:TaskForge__ApplicationId = 'a-project'
 dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run
 ```
 
-Leave it running. The client waits for `generate-report` and `http-request` jobs
-for `portfolio-demo`, executes their handlers locally, and reports outcomes.
-Without a compatible client, submitted jobs remain queued.
+Leave this terminal open. The sample handles `generate-report` and `http-request`
+jobs. Without a matching worker, new jobs remain queued.
 
-### 3. Submit and inspect a completed report
+### Submit a report and inspect the result
 
-In a second terminal, from the same repository root:
+In a second PowerShell terminal, from the repository root:
 
 ```powershell
-$env:TaskForge__ApplicationId = 'portfolio-demo'
+$env:TaskForge__ApplicationId = 'a-project'
 $submitted = dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Report submission failed.' }
+
 $api = 'http://localhost:8275'
-$limit = [DateTimeOffset]::UtcNow.AddSeconds(30)
+$deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
 do {
     $job = Invoke-RestMethod "$api/api/jobs/$($submitted.id)"
     if ($job.status -in @('Completed', 'DeadLettered', 'Cancelled')) { break }
     Start-Sleep -Milliseconds 250
-} while ([DateTimeOffset]::UtcNow -lt $limit)
+} while ([DateTimeOffset]::UtcNow -lt $deadline)
 if ($job.status -ne 'Completed') { throw "Expected Completed; got $($job.status)." }
+
 $job.result | ConvertTo-Json -Depth 5
-Invoke-RestMethod "$api/api/jobs/$($job.id)/attempts" | ConvertTo-Json -Depth 5
+$attempts = Invoke-RestMethod "$api/api/jobs/$($job.id)/attempts"
+$attempts | Format-Table attemptNumber, outcome, workerId, durationMilliseconds -AutoSize
 ```
 
-The built-in expense example produces this result (IDs and timestamps vary):
+The report has three entries totaling **190.25**, grouped into Supplies (**40.25**)
+and Travel (**150.00**). The first attempt is `Succeeded`, with `retryCount: 0`.
+The sample guide covers [custom reports, HTTP jobs, and multiple clients](docs/dotnet-client.md#sample-client).
 
-```json
-{
-  "title": "September expenses",
-  "entryCount": 3,
-  "totalAmount": 190.25,
-  "categories": [
-    { "category": "Supplies", "entryCount": 1, "totalAmount": 40.25 },
-    { "category": "Travel", "entryCount": 2, "totalAmount": 150.00 }
-  ]
-}
-```
+Stop the worker with Ctrl+C. Stop the server with `docker compose down`; the SQL
+named volume retains your jobs. Adding `--volumes` deletes that data.
 
-The job is `Completed`, and its first attempt is `Succeeded`. A normal successful
-run has `retryCount: 0`. See [client configuration and additional examples](docs/dotnet-clients.md#local-sample-client)
-for HTTP jobs, custom report payloads, and multiple applications.
+## Integrate with an application
 
-### 4. Stop the local run
+| Integration | What to use |
+| --- | --- |
+| .NET | [SDK and hosted worker](docs/dotnet-client.md): register local handlers and use `TaskForgeClient`. |
+| Node.js, Python, or another language | [HTTP API](docs/http-api.md): submit, acquire, execute locally, and report. No callback endpoint is required. |
+| Postman or another API client | Import the running server's [OpenAPI document](http://localhost:8275/openapi/v1.json). |
+| Local inspection | [Read-only console](docs/dotnet-client.md#debugging-console) for health, statistics, and job lists. |
 
-Press Ctrl+C in the execution-client terminal, then stop the server:
+The application decides when to submit work. TaskForge schedules retries of
+submitted jobs; it does not schedule recurring application tasks. Workers can run
+inside a backend service or as separate processes.
 
-```powershell
-docker compose down
-```
+## Execution and deployment boundaries
 
-The SQL named volume preserves data. Adding `--volumes` would delete it.
+- **Trusted networks:** the API has no authentication or authorization. Application
+  IDs route work; they do not restrict access to job data or management operations.
+- **Repeated execution:** retries and crash recovery can repeat business effects.
+  Handlers must enforce idempotency where needed; TaskForge does not guarantee
+  exactly-once external effects.
+- **Cooperative cancellation:** canceling a job prevents further accepted work on
+  that assignment, but cannot forcibly stop remote code.
+- **Bounded results:** serialized results are limited to 4,000 characters. Store
+  large outputs in application-owned storage and return a reference.
+- **Deployment scope:** the supplied configuration runs one API instance with SQL
+  Server. The test suite does not establish multi-instance or production-scale capacity.
 
-## HTTP and .NET integration
+## Build and test
 
-Every lifecycle action is available over HTTP; the SDK is optional. Clients
-initiate waits and reports, with no callback URLs or lease-renewal requirement.
-
-- [Plain HTTP walkthrough and API reference](docs/http-api.md): complete a job
-  using PowerShell alone, then inspect routing, retry, cancellation, and reports.
-- [.NET SDK, handler registry, and hosted worker](docs/dotnet-clients.md): use a
-  project reference to `src/TaskForge.SDK/TaskForge.SDK.csproj`. No TaskForge NuGet
-  package is published for this candidate.
-- [Read-only debugging console](docs/dotnet-clients.md#debugging-console): inspect
-  jobs, statistics, and API health.
-- The running API serves its schema at
-  [http://localhost:8275/openapi/v1.json](http://localhost:8275/openapi/v1.json).
-
-The sample loads `clientsettings.json` beside its executable. Its defaults are
-API `http://localhost:8275`, application `a-project`, and an HTTP-handler allowlist
-of `localhost` and `127.0.0.1`. Environment variables such as `TaskForge__BaseUrl`
-and `TaskForge__ApplicationId` override the client settings. The server requires
-`ConnectionStrings__TaskForge`; Compose supplies it from the ignored `.env` file.
-Retry and maintenance defaults are in [appsettings.json](src/TaskForge.Api/appsettings.json).
-
-## Testing and CI
-
-Use .NET 10. Unit tests require no Docker; integration tests use disposable SQL
-Server Testcontainers and require a running Linux container engine. SDK and
-separate-process sample-client tests are included in these two projects.
+Run from the repository root with .NET 10 and Docker running:
 
 ```powershell
 dotnet build TaskForge.sln --configuration Release
 dotnet test tests/TaskForge.UnitTests --configuration Release --no-build
 dotnet test tests/TaskForge.IntegrationTests --configuration Release --no-build
-docker compose build api
+docker build --tag taskforge-api:local .
 ```
 
-The [CI workflow](.github/workflows/ci.yml) runs the Windows build/unit tests,
-then Ubuntu SQL integration tests and a Docker image build. It does not publish
-packages or deploy the application. [Verification evidence](docs/verification.md)
-distinguishes local checks from CI and release publication.
+Unit tests run without Docker. Integration tests create a disposable SQL Server
+container and isolated databases; they cover HTTP contracts, concurrent ownership,
+recovery, SDK reporting, and independent sample processes. The normal Compose
+database is not used by these tests.
 
-## Known limitations
+[CI](.github/workflows/ci.yml) builds and runs unit tests on Windows, then builds
+and runs SQL integration tests and the Docker image build on Ubuntu.
 
-- Use a trusted network. There is no authentication or authorization. Application
-  IDs route work; they are not credentials or a tenant-security boundary. Job-ID
-  reads and cancellation are accessible across applications.
-- External effects can repeat after retries, interrupted reports, or recovery.
-  Submission idempotency and duplicate report handling do not provide exactly-once
-  business effects. Receivers must enforce their own durable idempotency.
-- Cancellation is cooperative. The server can reject late or stale outcomes but
-  cannot stop remote code. A handler that ignores cancellation can overlap a
-  replacement attempt. Pending SDK reports are in memory and are lost on exit.
-- The portfolio setup targets one API instance with SQL Server. Multi-instance
-  deployment and production-scale performance are not established by these tests.
-- Client clocks should be synchronized. The server's SQL clock decides report
-  timeliness; fixed leases are not extended. Serialized results are limited to
-  4,000 characters. Clients validate business payloads and supply handlers.
-- Payloads, results, and errors are readable through the API; do not place secrets
-  in jobs. The sample HTTP allowlist is local demonstration configuration.
-- Legacy worker tables remain for compatibility. `LegacyLeaseRecovery` history
-  records reconciliation, not proof of business execution; ambiguous ownership
-  is logged and held for investigation.
+## License
 
-## Upgrade and license
-
-`2.0.0` changes the server and client contract from historical `v1.0.0`: .NET 10,
-SQL Server, application ownership, and external execution clients are required.
-SQL migrations preserve supported legacy SQL Server data; they do not import
-SQLite databases. See the [upgrade notes](CHANGELOG.md#upgrade-notes).
-
-[MIT license](LICENSE) | [Repository](https://github.com/Arvence/TaskForge) |
-[Draft 2.0.0 release notes](docs/release-notes.md)
+[MIT](LICENSE)
