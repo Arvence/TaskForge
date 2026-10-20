@@ -12,6 +12,34 @@ request while keeping a durable record of what happened. Business code stays in
 the application that owns it. Any language can integrate through HTTP; the .NET
 SDK provides a client, typed handlers, and a hosted worker.
 
+## Try TaskForge with Postman
+
+The [Postman collection](postman/TaskForge.postman_collection.json) includes API
+requests, saved response examples, and feature tests. You need Postman and the
+running API/database; no SDK or sample worker is required for these tests.
+
+1. Follow [Start the server](#start-the-server) to clone the repository and run
+   `./setup.ps1`. Confirm [readiness](http://localhost:8275/api/ready) returns `Ready`.
+2. In Postman, select **Import** and choose
+   `postman/TaskForge.postman_collection.json` from your local checkout.
+3. Select **No Environment**. The collection provides its own variables, including
+   `baseUrl = http://localhost:8275`. Set the request timeout to **30,000 ms** to
+   allow the automatic retry scenario to wait for its next assignment.
+4. Open **02 — Feature Tests**, choose one scenario folder, and select **Run folder**.
+   Run its requests in the displayed order with **one iteration** and **no added
+   delay**, then review the assertions in the test results.
+
+Try the seven scenarios: priority scheduling, idempotency, automatic retry,
+cancellation and replay, attempt ownership, application routing, and validation.
+Expected error responses are part of the negative tests.
+
+**Run one scenario folder at a time; do not run the entire collection at once.**
+The scenarios create isolated test jobs and report simulated worker outcomes.
+Postman does not execute business handlers. Use **01 — API Explorer** to send
+individual requests; **03 — Advanced Verification** contains inspection requests.
+Concurrency, timeout recovery, and worker crash behavior are covered by the
+[integration tests](#build-and-test).
+
 ## How it works
 
 ```mermaid
@@ -109,7 +137,8 @@ named volume retains your jobs. Adding `--volumes` deletes that data.
 | --- | --- |
 | .NET | [SDK and hosted worker](docs/dotnet-client.md): register local handlers and use `TaskForgeClient`. |
 | Node.js, Python, or another language | [HTTP API](docs/http-api.md): submit, acquire, execute locally, and report. No callback endpoint is required. |
-| Postman or another API client | Import the running server's [OpenAPI document](http://localhost:8275/openapi/v1.json). |
+| Postman | Import the [collection](postman/TaskForge.postman_collection.json) and follow the [tryout instructions](#try-taskforge-with-postman). |
+| Another API client | Import the running server's [OpenAPI document](http://localhost:8275/openapi/v1.json). |
 | Local inspection | [Read-only console](docs/dotnet-client.md#debugging-console) for health, statistics, and job lists. |
 
 The application decides when to submit work. TaskForge schedules retries of
