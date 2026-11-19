@@ -53,6 +53,8 @@ public sealed class TaskForgeDbContext(DbContextOptions<TaskForgeDbContext> opti
                 .HasColumnType("datetimeoffset");
             builder.Property(job => job.QueuedAtUtc)
                 .HasColumnType("datetimeoffset");
+            builder.Property(job => job.ScheduledAtUtc)
+                .HasColumnType("datetimeoffset");
             builder.Property(job => job.StartedAtUtc)
                 .HasColumnType("datetimeoffset");
             builder.Property(job => job.CompletedAtUtc)

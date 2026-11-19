@@ -156,6 +156,7 @@ app.MapPost("/api/jobs", async Task<IResult> (SubmitJobRequest request, [FromHea
     .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Submit a durable background job.")
+    .WithDescription("An optional scheduledAtUtc timestamp with an explicit UTC offset delays the first assignment. A job with a future schedule remains queued until it is eligible for acquisition.")
     .Produces<JobResponse>(StatusCodes.Status201Created)
     .Produces<JobResponse>(StatusCodes.Status200OK)
     .ProducesValidationProblem()

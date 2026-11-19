@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -20,6 +21,20 @@ public static class Program
         {
             PrintUsage();
             return 0;
+        }
+
+        DateTimeOffset? scheduledAtUtc = null;
+        int runAtIndex = Array.IndexOf(args, "--run-at");
+        if (runAtIndex >= 0)
+        {
+            if (args[0] is not ("submit-report" or "submit-http") || runAtIndex != args.Length - 2 || !TryParseScheduledTime(args[^1], out DateTimeOffset scheduledAt))
+            {
+                Console.Error.WriteLine("Specify --run-at once after the submission arguments, with an ISO 8601 timestamp and an explicit UTC offset.");
+                return 2;
+            }
+
+            scheduledAtUtc = scheduledAt.ToUniversalTime();
+            args = args[..runAtIndex];
         }
 
         if (args is not (["run"] or ["submit-report"] or ["submit-report", _] or ["submit-http", _]))
@@ -60,15 +75,15 @@ public static class Program
                         ?? throw new JsonException("A report payload is required.");
                 }
 
-                job = await SampleJobs.SubmitReportAsync(client, payload);
+                job = await SampleJobs.SubmitReportAsync(client, payload, scheduledAtUtc: scheduledAtUtc);
             }
             else
             {
-                job = await SampleJobs.SubmitHttpAsync(client, args[1]);
+                job = await SampleJobs.SubmitHttpAsync(client, args[1], scheduledAtUtc: scheduledAtUtc);
             }
 
             JsonSerializerOptions output = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
-            Console.WriteLine(JsonSerializer.Serialize(new { job.Id, job.ApplicationId, job.Type, job.Status }, output));
+            Console.WriteLine(JsonSerializer.Serialize(new { job.Id, job.ApplicationId, job.Type, job.Status, job.ScheduledAtUtc }, output));
             return 0;
         }
         catch (Exception exception) when (exception is HttpRequestException or TimeoutException or JsonException or IOException or ArgumentException or InvalidOperationException)
@@ -78,12 +93,20 @@ public static class Program
         }
     }
 
+    private static bool TryParseScheduledTime(string value, out DateTimeOffset scheduledAt)
+    {
+        scheduledAt = default;
+        return (value.EndsWith('Z') || (value.Length >= 6 && value[^6] is '+' or '-'))
+            && DateTimeOffset.TryParseExact(value, ["yyyy-MM-dd'T'HH:mmK", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK"], CultureInfo.InvariantCulture, DateTimeStyles.None, out scheduledAt);
+    }
+
     private static void PrintUsage()
     {
         Console.WriteLine("TaskForge sample client");
         Console.WriteLine("  run                         Run the external worker until Ctrl+C.");
         Console.WriteLine("  submit-report [payload.json] Submit an expense report (built-in example by default).");
         Console.WriteLine("  submit-http <url>           Submit an HTTP GET for the client's allowed hosts.");
+        Console.WriteLine("Append --run-at \"<ISO_8601_TIMESTAMP_WITH_OFFSET>\" to either submit command for one-time scheduling.");
         Console.WriteLine("Configure clientsettings.json or TaskForge__BaseUrl / TaskForge__ApplicationId environment variables.");
     }
 }

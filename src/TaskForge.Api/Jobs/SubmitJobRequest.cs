@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 using TaskForge.Application.Jobs.Models;
 using TaskForge.Domain.Jobs;
@@ -13,6 +14,8 @@ public sealed record SubmitJobRequest
     public JobPriority Priority { get; init; } = JobPriority.Normal;
     public int MaxRetries { get; init; } = 3;
     public int TimeoutSeconds { get; init; } = 30;
+    [JsonConverter(typeof(ScheduledAtUtcJsonConverter))]
+    public DateTimeOffset? ScheduledAtUtc { get; init; }
 
     public SubmitJobCommand ToCommand() => new(
         ApplicationId,
@@ -22,5 +25,6 @@ public sealed record SubmitJobRequest
             : Payload.GetRawText(),
         Priority,
         MaxRetries,
-        TimeoutSeconds);
+        TimeoutSeconds,
+        ScheduledAtUtc);
 }

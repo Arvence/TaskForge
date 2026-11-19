@@ -12,9 +12,9 @@ public static class SampleJobs
 
     public static GenerateReportPayload ExampleReport() => new("September expenses", [new("Travel", 125.50m), new("Supplies", 40.25m), new("Travel", 24.50m)]);
 
-    public static Task<JobResponse> SubmitReportAsync(TaskForgeClient client, GenerateReportPayload payload, CancellationToken cancellationToken = default) =>
-        client.SubmitAsync(new("generate-report", JsonSerializer.SerializeToElement(payload, SerializerOptions)), cancellationToken: cancellationToken);
+    public static Task<JobResponse> SubmitReportAsync(TaskForgeClient client, GenerateReportPayload payload, CancellationToken cancellationToken = default, DateTimeOffset? scheduledAtUtc = null) =>
+        client.SubmitAsync(new("generate-report", JsonSerializer.SerializeToElement(payload, SerializerOptions)) { ScheduledAtUtc = scheduledAtUtc }, cancellationToken: cancellationToken);
 
-    public static Task<JobResponse> SubmitHttpAsync(TaskForgeClient client, string url, CancellationToken cancellationToken = default) =>
-        client.SubmitAsync(new("http-request", JsonSerializer.SerializeToElement(new HttpRequestPayload(url, "GET"), SerializerOptions)), cancellationToken: cancellationToken);
+    public static Task<JobResponse> SubmitHttpAsync(TaskForgeClient client, string url, CancellationToken cancellationToken = default, DateTimeOffset? scheduledAtUtc = null) =>
+        client.SubmitAsync(new("http-request", JsonSerializer.SerializeToElement(new HttpRequestPayload(url, "GET"), SerializerOptions)) { ScheduledAtUtc = scheduledAtUtc }, cancellationToken: cancellationToken);
 }

@@ -80,6 +80,43 @@ public sealed class SqlServerJobDistributionTests(SqlServerFixture fixture) : Sq
     }
 
     [Fact]
+    public async Task Scheduled_job_is_ineligible_before_its_due_time_and_claimed_once_at_the_boundary()
+    {
+        DateTimeOffset due = Now.AddHours(1);
+        Job scheduled = new(Guid.NewGuid(), "test-app", "example", "{}", JobPriority.High, 3, 30, Now, scheduledAtUtc: due);
+        scheduled.Queue(Now);
+        Job immediate = CreateJob();
+        await SeedAsync(scheduled, immediate);
+
+        await using (TaskForgeDbContext before = new(DistributionOptions))
+        {
+            EfCoreJobStore store = new(before);
+            JobExecutionAssignment initial = Assert.IsType<JobExecutionAssignment>(await store.DistributeAtAsync("test-app", "early-worker", ["example"], Grace, due.AddTicks(-1)));
+            Assert.Equal(immediate.Id, initial.Job.Id);
+            Assert.Null(await store.DistributeAtAsync("test-app", "early-worker", ["example"], Grace, due.AddTicks(-1)));
+            Assert.Equal(JobStatus.Queued, (await before.Jobs.AsNoTracking().SingleAsync(job => job.Id == scheduled.Id)).Status);
+            Assert.False(await before.JobAttempts.AnyAsync(attempt => attempt.JobId == scheduled.Id));
+        }
+
+        DbContextOptions<TaskForgeDbContext> options = new DbContextOptionsBuilder<TaskForgeDbContext>(DistributionOptions)
+            .AddInterceptors(new ConcurrentAcquisitionInterceptor()).Options;
+        await using TaskForgeDbContext first = new(options);
+        await using TaskForgeDbContext second = new(options);
+        JobExecutionAssignment?[] results = await Task.WhenAll(
+            new EfCoreJobStore(first).DistributeAtAsync("test-app", "worker-01", ["example"], Grace, due),
+            new EfCoreJobStore(second).DistributeAtAsync("test-app", "worker-02", ["example"], Grace, due));
+
+        JobExecutionAssignment assignment = Assert.Single(results.OfType<JobExecutionAssignment>());
+        Assert.Equal(scheduled.Id, assignment.Job.Id);
+        Assert.Equal(due.AddSeconds(scheduled.TimeoutSeconds), assignment.DeadlineAtUtc);
+        await using TaskForgeDbContext read = new(DistributionOptions);
+        JobAttempt saved = await read.JobAttempts.SingleAsync(attempt => attempt.JobId == scheduled.Id);
+        Assert.Equal(due, saved.StartedAtUtc);
+        Assert.Equal(1, saved.AttemptNumber);
+        Assert.Equal(assignment.AttemptId, saved.Id);
+    }
+
+    [Fact]
     public async Task Application_and_supported_types_are_filtered_before_ordering()
     {
         Job otherApplication = CreateJob(applicationId: "other-app", priority: JobPriority.High);

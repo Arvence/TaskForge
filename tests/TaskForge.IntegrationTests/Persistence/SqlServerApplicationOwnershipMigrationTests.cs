@@ -43,6 +43,8 @@ public sealed class SqlServerApplicationOwnershipMigrationTests(SqlServerFixture
         Assert.Equal("legacy", queued.ApplicationId);
         Assert.Equal(JobStatus.Completed, completed.Status);
         Assert.Equal(JobStatus.Queued, queued.Status);
+        Assert.Null(completed.ScheduledAtUtc);
+        Assert.Null(queued.ScheduledAtUtc);
         Assert.Equal("original-key", completed.IdempotencyKey);
         Assert.Null(queued.IdempotencyKey);
         Assert.Equal("{\"value\":1}", completed.PayloadJson);

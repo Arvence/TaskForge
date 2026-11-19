@@ -4,7 +4,7 @@ public sealed class Job
 {
     private Job() { }
 
-    public Job(Guid id, string applicationId, string type, string payloadJson, JobPriority priority, int maxRetries, int timeoutSeconds, DateTimeOffset createdAtUtc, string? idempotencyKey = null)
+    public Job(Guid id, string applicationId, string type, string payloadJson, JobPriority priority, int maxRetries, int timeoutSeconds, DateTimeOffset createdAtUtc, string? idempotencyKey = null, DateTimeOffset? scheduledAtUtc = null)
     {
         Id = id;
         ApplicationId = JobApplicationId.Normalize(applicationId);
@@ -15,6 +15,7 @@ public sealed class Job
         MaxRetries = maxRetries;
         TimeoutSeconds = timeoutSeconds;
         CreatedAtUtc = createdAtUtc;
+        ScheduledAtUtc = scheduledAtUtc?.ToUniversalTime();
         UpdatedAtUtc = createdAtUtc;
         Status = JobStatus.Pending;
     }
@@ -34,6 +35,7 @@ public sealed class Job
     public DateTimeOffset CreatedAtUtc { get; private set; }
     public DateTimeOffset UpdatedAtUtc { get; private set; }
     public DateTimeOffset? QueuedAtUtc { get; private set; }
+    public DateTimeOffset? ScheduledAtUtc { get; private set; }
     public DateTimeOffset? StartedAtUtc { get; private set; }
     public DateTimeOffset? CompletedAtUtc { get; private set; }
     public DateTimeOffset? NextRetryAtUtc { get; private set; }
@@ -62,6 +64,11 @@ public sealed class Job
         if (Status != JobStatus.Queued)
         {
             throw new InvalidOperationException("Only a queued job can start processing.");
+        }
+
+        if (ScheduledAtUtc > now)
+        {
+            throw new InvalidOperationException("A scheduled job cannot start before its scheduled time.");
         }
 
         if (string.IsNullOrWhiteSpace(workerId))

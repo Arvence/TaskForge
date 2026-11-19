@@ -39,7 +39,8 @@ public sealed class JobManager(
             command.MaxRetries,
             command.TimeoutSeconds,
             now,
-            normalizedIdempotencyKey);
+            normalizedIdempotencyKey,
+            command.ScheduledAtUtc);
 
         job.Queue(now);
         Job persistedJob = await jobRepository.AddOrGetExistingAsync(
@@ -138,5 +139,6 @@ public sealed class JobManager(
         && existing.PayloadJson == candidate.PayloadJson
         && existing.Priority == candidate.Priority
         && existing.MaxRetries == candidate.MaxRetries
-        && existing.TimeoutSeconds == candidate.TimeoutSeconds;
+        && existing.TimeoutSeconds == candidate.TimeoutSeconds
+        && existing.ScheduledAtUtc == candidate.ScheduledAtUtc;
 }

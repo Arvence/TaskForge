@@ -213,6 +213,43 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
     }
 
     [Fact]
+    public async Task Schedule_requires_an_explicit_offset_and_is_part_of_submission_identity()
+    {
+        await using WebApplicationFactory<Program> factory = CreateFactory();
+        using HttpClient client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("Idempotency-Key", "scheduled-report");
+        DateTimeOffset due = DateTimeOffset.UtcNow.AddHours(1);
+        object Request(string scheduledAtUtc) => new { applicationId = "test-app", type = "remote-only", payload = new { value = 1 }, scheduledAtUtc };
+
+        using HttpResponseMessage invalid = await client.PostAsJsonAsync("/api/jobs", Request(due.UtcDateTime.ToString("s")));
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync("/api/jobs", Request(due.ToOffset(TimeSpan.FromHours(3)).ToString("O")));
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        JsonElement scheduled = await created.Content.ReadFromJsonAsync<JsonElement>();
+        Guid id = scheduled.GetProperty("id").GetGuid();
+        DateTimeOffset stored = scheduled.GetProperty("scheduledAtUtc").GetDateTimeOffset();
+        Assert.Equal(due, stored);
+        Assert.Equal(TimeSpan.Zero, stored.Offset);
+
+        using HttpResponseMessage duplicate = await client.PostAsJsonAsync("/api/jobs", Request(due.ToString("O")));
+        Assert.Equal(HttpStatusCode.OK, duplicate.StatusCode);
+        Assert.Equal(id, (await duplicate.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid());
+
+        using HttpResponseMessage conflict = await client.PostAsJsonAsync("/api/jobs", Request(due.AddSeconds(1).ToString("O")));
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+
+        using HttpResponseMessage cancelled = await client.PostAsync($"/api/jobs/{id}/cancel", null);
+        Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+        Assert.Equal("Cancelled", (await cancelled.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetString());
+        using HttpResponseMessage replay = await client.PostAsync($"/api/jobs/{id}/retry", null);
+        Assert.Equal(HttpStatusCode.Created, replay.StatusCode);
+        JsonElement replayed = await replay.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.NotEqual(id, replayed.GetProperty("id").GetGuid());
+        Assert.Equal(JsonValueKind.Null, replayed.GetProperty("scheduledAtUtc").ValueKind);
+    }
+
+    [Fact]
     public async Task Get_stats_returns_counts_and_nullable_success_rate()
     {
         await using WebApplicationFactory<Program> factory = CreateFactory();

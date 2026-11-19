@@ -6,6 +6,8 @@ namespace TaskForge.Api.Jobs;
 
 public sealed record JobResponse(Guid Id, string ApplicationId, string Type, JsonElement Payload, string? IdempotencyKey, JsonElement? Result, JobPriority Priority, JobStatus Status, int MaxRetries, int RetryCount, int TimeoutSeconds, bool CancellationRequested, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, DateTimeOffset? QueuedAtUtc, DateTimeOffset? StartedAtUtc, DateTimeOffset? CompletedAtUtc, DateTimeOffset? NextRetryAtUtc, string? OwningWorkerId, DateTimeOffset? LeaseExpiresAtUtc, string? LastError)
 {
+    public DateTimeOffset? ScheduledAtUtc { get; init; }
+
     public static JobResponse From(Job job) => new(
         job.Id,
         job.ApplicationId,
@@ -29,5 +31,8 @@ public sealed record JobResponse(Guid Id, string ApplicationId, string Type, Jso
         job.NextRetryAtUtc,
         job.OwningWorkerId,
         job.LeaseExpiresAtUtc,
-        job.LastError);
+        job.LastError)
+    {
+        ScheduledAtUtc = job.ScheduledAtUtc
+    };
 }

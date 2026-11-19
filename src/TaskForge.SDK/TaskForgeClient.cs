@@ -9,6 +9,8 @@ namespace TaskForge.SDK;
 
 public sealed class TaskForgeClient
 {
+    private sealed record JobSubmission(string ApplicationId, string Type, JsonElement Payload, JobPriority Priority, int MaxRetries, int TimeoutSeconds, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? ScheduledAtUtc);
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
@@ -52,15 +54,8 @@ public sealed class TaskForgeClient
     public Task<JobResponse> SubmitAsync(SubmitJobRequest request, string? idempotencyKey = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return SendRequiredAsync<JobResponse>(HttpMethod.Post, "api/jobs", new
-        {
-            applicationId = _applicationId,
-            request.Type,
-            request.Payload,
-            request.Priority,
-            request.MaxRetries,
-            request.TimeoutSeconds
-        }, idempotencyKey, cancellationToken);
+        JobSubmission body = new(_applicationId, request.Type, request.Payload, request.Priority, request.MaxRetries, request.TimeoutSeconds, request.ScheduledAtUtc?.ToUniversalTime());
+        return SendRequiredAsync<JobResponse>(HttpMethod.Post, "api/jobs", body, idempotencyKey, cancellationToken);
     }
 
     public Task<ExecutionAssignmentResponse?> WaitAsync(WaitForExecutionRequest request, CancellationToken cancellationToken = default)

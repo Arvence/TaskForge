@@ -18,6 +18,7 @@ public sealed class TaskForgeClientTests
     public async Task Submit_uses_configured_scope_string_priority_and_request_local_idempotency(HttpStatusCode status)
     {
         int calls = 0;
+        DateTimeOffset scheduledAt = DateTimeOffset.UtcNow.AddHours(1).ToOffset(TimeSpan.FromHours(3));
         using HttpClient http = new(new StubHandler(async (request, token) =>
         {
             Assert.Equal(HttpMethod.Post, request.Method);
@@ -35,7 +36,13 @@ public sealed class TaskForgeClientTests
 
             using JsonDocument body = JsonDocument.Parse(await request.Content.ReadAsStringAsync(token));
             JsonElement root = body.RootElement;
-            Assert.Equal(6, root.EnumerateObject().Count());
+            Assert.Equal(calls == 1 ? 6 : 7, root.EnumerateObject().Count());
+            if (calls == 2)
+            {
+                DateTimeOffset sent = root.GetProperty("scheduledAtUtc").GetDateTimeOffset();
+                Assert.Equal(scheduledAt, sent);
+                Assert.Equal(TimeSpan.Zero, sent.Offset);
+            }
             Assert.Equal("a-project", root.GetProperty("applicationId").GetString());
             Assert.Equal("calculate", root.GetProperty("type").GetString());
             Assert.Equal("High", root.GetProperty("priority").GetString());
@@ -49,7 +56,7 @@ public sealed class TaskForgeClientTests
         SubmitJobRequest request = new("calculate", JsonSerializer.SerializeToElement(new { amount = 12.5m, optional = (string?)null }), JobPriority.High, 1, 45);
 
         JobResponse submitted = await client.SubmitAsync(request, "submission-01");
-        await client.SubmitAsync(request);
+        await client.SubmitAsync(request with { ScheduledAtUtc = scheduledAt });
 
         Assert.Equal(JobId, submitted.Id);
         Assert.Equal(JobStatus.Completed, submitted.Status);

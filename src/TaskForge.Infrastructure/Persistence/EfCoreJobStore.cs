@@ -71,10 +71,10 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
                 DateTimeOffset now = await GetSqlUtcNowAsync(cancellationToken);
                 Job? job = await dbContext.Jobs.AsNoTracking()
                     .Where(candidate => candidate.ApplicationId == applicationId && types.Contains(candidate.Type))
-                    .Where(candidate => candidate.Status == JobStatus.Queued
+                    .Where(candidate => (candidate.Status == JobStatus.Queued && (candidate.ScheduledAtUtc == null || candidate.ScheduledAtUtc <= now))
                         || (candidate.Status == JobStatus.Retrying && candidate.NextRetryAtUtc != null && candidate.NextRetryAtUtc <= now))
                     .OrderByDescending(candidate => candidate.Priority)
-                    .ThenBy(candidate => candidate.NextRetryAtUtc ?? candidate.QueuedAtUtc)
+                    .ThenBy(candidate => candidate.NextRetryAtUtc ?? (candidate.ScheduledAtUtc > candidate.QueuedAtUtc ? candidate.ScheduledAtUtc : candidate.QueuedAtUtc))
                     .ThenBy(candidate => candidate.CreatedAtUtc)
                     .ThenBy(candidate => candidate.Id)
                     .FirstOrDefaultAsync(cancellationToken);
@@ -97,7 +97,7 @@ public sealed class EfCoreJobStore(TaskForgeDbContext dbContext, JobRetryPolicy?
                     .Select(attempt => (int?)attempt.AttemptNumber)
                     .MaxAsync(cancellationToken) ?? 0;
                 now = await GetSqlUtcNowAsync(cancellationToken);
-                if (job.Status == JobStatus.Retrying && job.NextRetryAtUtc > now)
+                if (job.ScheduledAtUtc > now || (job.Status == JobStatus.Retrying && job.NextRetryAtUtc > now))
                 {
                     continue;
                 }
