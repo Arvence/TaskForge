@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 
 using Microsoft.AspNetCore.Hosting;
@@ -89,7 +90,79 @@ public sealed class TaskForgeWorkerDeliveryContractTests(SqlServerFixture fixtur
         }
     }
 
+    [Fact]
+    public async Task Lost_assignment_response_times_out_and_same_worker_executes_only_the_replacement_attempt()
+    {
+        await using WebApplicationFactory<Program> server = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder
+            .UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:RetryDelaySeconds", "1"));
+        using HttpClient http = server.CreateClient();
+        TaskForgeClient client = Client(http);
+        LostAssignmentProbe traffic = new();
+        using HttpClient workerHttp = server.CreateDefaultClient(traffic);
+        HandlerProbe handler = new();
+        using IHost host = new HostBuilder().ConfigureServices(services =>
+        {
+            services.AddSingleton(Client(workerHttp));
+            services.AddSingleton(handler);
+            services.AddTaskForgeHandlers(registry => registry.Register<WorkPayload, WorkHandler>("sdk-delivery"));
+            services.AddTaskForgeWorker(new() { WaitSeconds = 1, TransportErrorDelay = TimeSpan.FromMilliseconds(50) });
+        }).Build();
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+        JobResponse submitted = await client.SubmitAsync(new("sdk-delivery", JsonSerializer.SerializeToElement(new { value = 21 }), MaxRetries: 1, TimeoutSeconds: 5), cancellationToken: deadline.Token);
+        await host.StartAsync(deadline.Token);
+        try
+        {
+            await traffic.CompletionAccepted.Task.WaitAsync(deadline.Token);
+            JobResponse final = await client.GetJobAsync(submitted.Id, deadline.Token);
+            IReadOnlyList<JobAttemptResponse> history = await client.GetAttemptsAsync(submitted.Id, deadline.Token);
+            ExecutionAssignmentResponse lost = Assert.IsType<ExecutionAssignmentResponse>(traffic.DroppedAssignment);
+
+            Assert.Equal(submitted.Id, lost.JobId);
+            Assert.Equal(JobStatus.Completed, final.Status);
+            Assert.Equal(1, final.RetryCount);
+            Assert.Equal(42, final.Result!.Value.GetInt32());
+            Assert.Equal([1, 2], history.Select(attempt => attempt.AttemptNumber));
+            Assert.Equal([JobAttemptOutcome.TimedOut, JobAttemptOutcome.Succeeded], history.Select(attempt => attempt.Outcome));
+            Assert.Equal(lost.AttemptId, history[0].AttemptId);
+            Assert.NotEqual(lost.AttemptId, history[1].AttemptId);
+            Assert.All(history, attempt => Assert.Equal(lost.WorkerId, attempt.WorkerId));
+            Assert.Equal(1, handler.Invocations);
+        }
+        finally
+        {
+            await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     private static TaskForgeClient Client(HttpClient http) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "a-project" });
+
+    private sealed class LostAssignmentProbe : DelegatingHandler
+    {
+        public ExecutionAssignmentResponse? DroppedAssignment { get; private set; }
+        public TaskCompletionSource CompletionAccepted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            HttpResponseMessage response = await base.SendAsync(request, cancellationToken);
+            string path = request.RequestUri!.AbsolutePath;
+            if (response.StatusCode == HttpStatusCode.OK && path == "/api/executions/wait" && DroppedAssignment is null)
+            {
+                using (response)
+                {
+                    DroppedAssignment = await response.Content.ReadFromJsonAsync<ExecutionAssignmentResponse>(cancellationToken);
+                }
+
+                throw new HttpRequestException("Server committed the assignment, but the response was lost.");
+            }
+
+            if (response.StatusCode == HttpStatusCode.OK && path.EndsWith("/complete", StringComparison.Ordinal))
+            {
+                CompletionAccepted.TrySetResult();
+            }
+
+            return response;
+        }
+    }
 
     private sealed record ReportRequest(string Path, string Body);
     private sealed record AcceptedReport(HttpStatusCode Status, string Body, IReadOnlyList<JobAttemptResponse> History);
