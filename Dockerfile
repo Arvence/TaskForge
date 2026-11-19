@@ -1,20 +1,18 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-COPY ["TaskForge.sln", "global.json", "Directory.Build.props", "./"]
+COPY ["global.json", "Directory.Build.props", "./"]
 COPY ["src/TaskForge.Domain/TaskForge.Domain.csproj", "src/TaskForge.Domain/"]
 COPY ["src/TaskForge.Application/TaskForge.Application.csproj", "src/TaskForge.Application/"]
 COPY ["src/TaskForge.Infrastructure/TaskForge.Infrastructure.csproj", "src/TaskForge.Infrastructure/"]
 COPY ["src/TaskForge.Api/TaskForge.Api.csproj", "src/TaskForge.Api/"]
-COPY ["src/TaskForge.Debugging/TaskForge.Debugging.csproj", "src/TaskForge.Debugging/"]
-COPY ["src/TaskForge.SDK/TaskForge.SDK.csproj", "src/TaskForge.SDK/"]
-COPY ["samples/TaskForge.SampleClient/TaskForge.SampleClient.csproj", "samples/TaskForge.SampleClient/"]
-COPY ["tests/TaskForge.UnitTests/TaskForge.UnitTests.csproj", "tests/TaskForge.UnitTests/"]
-COPY ["tests/TaskForge.IntegrationTests/TaskForge.IntegrationTests.csproj", "tests/TaskForge.IntegrationTests/"]
-RUN dotnet restore TaskForge.sln
+RUN dotnet restore src/TaskForge.Api/TaskForge.Api.csproj
 
-COPY . .
-RUN dotnet publish TaskForge.sln --configuration Release --no-restore -p:UseAppHost=false
+COPY ["src/TaskForge.Domain/", "src/TaskForge.Domain/"]
+COPY ["src/TaskForge.Application/", "src/TaskForge.Application/"]
+COPY ["src/TaskForge.Infrastructure/", "src/TaskForge.Infrastructure/"]
+COPY ["src/TaskForge.Api/", "src/TaskForge.Api/"]
+RUN dotnet publish src/TaskForge.Api/TaskForge.Api.csproj --configuration Release --no-restore -p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
