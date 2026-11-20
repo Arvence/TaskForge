@@ -106,7 +106,7 @@ public static class Program
         Console.WriteLine("TaskForge sample client");
         Console.WriteLine("  run                         Run the external worker until Ctrl+C.");
         Console.WriteLine("  submit-report [payload.json] Submit an expense report (built-in example by default).");
-        Console.WriteLine("  submit-http <url>           Submit an HTTP GET for the client's allowed hosts.");
+        Console.WriteLine("  submit-http <url>           Submit an HTTP GET for the sample worker's allowed origin.");
         Console.WriteLine("Append --run-at \"<ISO_8601_TIMESTAMP_WITH_OFFSET>\" to either submit command for one-time scheduling.");
         Console.WriteLine("Configure clientsettings.json or TaskForge__BaseUrl / TaskForge__ApplicationId environment variables.");
         Console.WriteLine("Set TaskForge__ApiKey to the API key for the configured application.");

@@ -190,10 +190,11 @@ Titles allow 1–120 characters; reports accept 1–1,000 entries, nonblank cate
 of at most 80 characters, and nonnegative amounts with up to two decimal places
 and a maximum of 1,000,000,000,000. Reports exceeding the result limit are rejected.
 
-The HTTP command submits a GET request. Its handler returns status code and reason
-phrase, not the response body. The local allowlist defaults to `localhost` and
-`127.0.0.1`; redirects are disabled. These handlers belong to the sample, not the
-SDK or server.
+The HTTP command submits a GET job. The sample worker checks that the URL matches
+its configured scheme, host, and port before sending it. GET jobs must omit the
+body and headers or set them to null. The worker rejects URL credentials, queries,
+and fragments and disables redirects and automatic cookies. It reports the
+status code and reason phrase.
 
 The sample reads [clientsettings.json](../samples/TaskForge.SampleClient/clientsettings.json)
 beside its executable, then environment overrides:
@@ -203,8 +204,11 @@ beside its executable, then environment overrides:
 | `TaskForge__BaseUrl` | `http://localhost:8275` |
 | `TaskForge__ApplicationId` | `a-project` |
 | `TaskForge__ApiKey` | Required for job operations. Use the configured application key. |
-| `HttpRequestJobs__AllowedHosts__0` | `localhost` |
-| `HttpRequestJobs__AllowedHosts__1` | `127.0.0.1` |
+| `HttpRequestJobs__AllowedOrigin` | `http://localhost:8275` |
+
+Set `HttpRequestJobs__AllowedOrigin` in the worker terminal for a different
+destination. Use just the scheme, host, and port. Replace any older
+`HttpRequestJobs__AllowedHosts__*` settings when upgrading.
 
 For another application, set `$env:TaskForge__ApplicationId = 'b-project'` in both
 its worker and submission terminals. To add capacity for one application, start

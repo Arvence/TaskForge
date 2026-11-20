@@ -12,9 +12,11 @@ public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRe
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<string> AllowedMethods = new(StringComparer.OrdinalIgnoreCase) { "DELETE", "GET", "PATCH", "POST", "PUT" };
-    private static readonly HashSet<string> RestrictedHeaders = new(StringComparer.OrdinalIgnoreCase) { "Connection", "Content-Length", "Host", "Transfer-Encoding" };
-    private readonly HashSet<string> _allowedHosts = (options.Value.AllowedHosts ?? [])
-        .Where(host => !string.IsNullOrWhiteSpace(host)).Select(host => host.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> RestrictedHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization", "Connection", "Content-Length", "Cookie", "Host", "Proxy-Authorization", "Transfer-Encoding"
+    };
+    private readonly string? _allowedOrigin = ReadOrigin(options.Value.AllowedOrigin);
 
     public async Task<JsonElement?> HandleAsync(HttpRequestPayload payload, CancellationToken cancellationToken = default)
     {
@@ -48,15 +50,21 @@ public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRe
             throw new NonRetryableJobException("URL must be an absolute HTTP or HTTPS URL without user information.");
         }
 
-        if (!_allowedHosts.Contains(uri.DnsSafeHost))
+        if (uri.Query.Length != 0 || uri.Fragment.Length != 0 ||
+            !string.Equals(uri.GetLeftPart(UriPartial.Authority), _allowedOrigin, StringComparison.OrdinalIgnoreCase))
         {
-            throw new NonRetryableJobException($"HTTP host '{uri.DnsSafeHost}' is not allowed.");
+            throw new NonRetryableJobException("The HTTP origin is not allowed or the URL contains a query or fragment.");
         }
 
         string method = string.IsNullOrWhiteSpace(payload.Method) ? "POST" : payload.Method.Trim().ToUpperInvariant();
         if (!AllowedMethods.Contains(method))
         {
             throw new NonRetryableJobException($"HTTP method '{method}' is not supported.");
+        }
+
+        if (method == "GET" && (payload.Body is { ValueKind: not JsonValueKind.Null } || payload.Headers is not null))
+        {
+            throw new NonRetryableJobException("GET jobs must omit the body and headers or set them to null.");
         }
 
         HttpRequestMessage request = new(new HttpMethod(method), uri);
@@ -88,5 +96,21 @@ public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRe
             request.Dispose();
             throw;
         }
+    }
+
+    private static string? ReadOrigin(string? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri) || uri.Scheme is not ("http" or "https") ||
+            uri.UserInfo.Length != 0 || uri.AbsolutePath != "/" || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+        {
+            throw new InvalidOperationException("Configure HttpRequestJobs:AllowedOrigin as an HTTP or HTTPS origin with no credentials, path, query, or fragment.");
+        }
+
+        return uri.GetLeftPart(UriPartial.Authority);
     }
 }

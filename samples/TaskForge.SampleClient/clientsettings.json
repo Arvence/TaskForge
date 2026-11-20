@@ -4,7 +4,7 @@
     "ApplicationId": "a-project"
   },
   "HttpRequestJobs": {
-    "AllowedHosts": ["localhost", "127.0.0.1"]
+    "AllowedOrigin": "http://localhost:8275"
   },
   "Logging": {
     "LogLevel": {

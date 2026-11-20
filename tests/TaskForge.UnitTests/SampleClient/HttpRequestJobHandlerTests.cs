@@ -45,6 +45,10 @@ public sealed class HttpRequestJobHandlerTests
     [InlineData("https://api.example.test/tasks", "TRACE", "not supported")]
     [InlineData("https://internal.example.test/tasks", "GET", "not allowed")]
     [InlineData("https://api.example.test.evil.test/tasks", "GET", "not allowed")]
+    [InlineData("http://api.example.test/tasks", "GET", "not allowed")]
+    [InlineData("https://api.example.test:8443/tasks", "GET", "not allowed")]
+    [InlineData("https://api.example.test/tasks?value=1", "GET", "query or fragment")]
+    [InlineData("https://api.example.test/tasks#section", "GET", "query or fragment")]
     [InlineData("file:///tmp/data", "GET", "absolute HTTP")]
     [InlineData("/tasks", "GET", "absolute HTTP")]
     [InlineData("https://user:password@api.example.test/tasks", "GET", "user information")]
@@ -63,6 +67,9 @@ public sealed class HttpRequestJobHandlerTests
     [InlineData("Content-Length", "5")]
     [InlineData("Connection", "close")]
     [InlineData("Transfer-Encoding", "chunked")]
+    [InlineData("Authorization", "Bearer example")]
+    [InlineData("Cookie", "session=example")]
+    [InlineData("Proxy-Authorization", "Basic example")]
     [InlineData("Invalid Header", "value")]
     [InlineData("X-Test", "value\r\ninjected: value")]
     [InlineData("X-Test", null)]
@@ -71,6 +78,32 @@ public sealed class HttpRequestJobHandlerTests
         using StubHttpHandler transport = new(HttpStatusCode.OK);
         using HttpClient http = new(transport);
         await Assert.ThrowsAsync<NonRetryableJobException>(() => Handler(http).HandleAsync(new("https://api.example.test/tasks", Headers: new Dictionary<string, string?> { [name] = value })));
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Get_jobs_reject_a_body_or_headers_before_sending(bool hasBody)
+    {
+        using StubHttpHandler transport = new(HttpStatusCode.OK);
+        using HttpClient http = new(transport);
+        HttpRequestPayload request = hasBody
+            ? new("https://api.example.test/tasks", "GET", JsonSerializer.SerializeToElement(new { value = 42 }))
+            : new("https://api.example.test/tasks", "GET", Headers: new Dictionary<string, string?> { ["X-Source"] = "SampleClient" });
+
+        await Assert.ThrowsAsync<NonRetryableJobException>(() => Handler(http).HandleAsync(request));
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
+    public async Task Http_execution_requires_an_explicit_worker_origin()
+    {
+        using StubHttpHandler transport = new(HttpStatusCode.OK);
+        using HttpClient http = new(transport);
+        HttpRequestJobHandler handler = new(http, Options.Create(new HttpRequestJobOptions()));
+
+        await Assert.ThrowsAsync<NonRetryableJobException>(() => handler.HandleAsync(new("http://localhost:8275/api/health", "GET")));
         Assert.Equal(0, transport.Calls);
     }
 
@@ -127,7 +160,7 @@ public sealed class HttpRequestJobHandlerTests
         Assert.Equal(1, transport.Calls);
     }
 
-    private static HttpRequestJobHandler Handler(HttpClient http) => new(http, Options.Create(new HttpRequestJobOptions { AllowedHosts = ["api.example.test"] }));
+    private static HttpRequestJobHandler Handler(HttpClient http) => new(http, Options.Create(new HttpRequestJobOptions { AllowedOrigin = "https://api.example.test" }));
 
     private sealed class StubHttpHandler(HttpStatusCode status) : HttpMessageHandler
     {
