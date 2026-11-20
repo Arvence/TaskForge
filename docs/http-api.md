@@ -29,7 +29,7 @@ backend worker, not a browser tab.
 | `POST` | `/api/jobs/{jobId}/attempts/{attemptId}/fail` | Report failure (`200`, `404`, `409`). |
 | `GET` | `/api/health` | API liveness (`200`). |
 | `GET` | `/api/ready` | Database connectivity (`200`, `503`). |
-| `GET` | `/api/stats` | Global current-state counts and success rate (`200`). |
+| `GET` | `/api/stats` | Current-state counts and success rate for the authenticated application (`200`). |
 
 Requests with invalid fields return `400`; unsupported request content types return
 `415`. Errors may be Problem Details or endpoint-specific JSON; use the HTTP status
@@ -38,6 +38,9 @@ routes `GET /api/workers` and `PUT /api/workers/count` return `410`; configure w
 capacity in clients.
 
 ## Submit work
+
+Send the application's bearer key with job requests. The server must have a
+[payload contract](payload-contracts.md) registered for the application and job type.
 
 Send this body to `POST /api/jobs` while the sample worker runs for `a-project`:
 
@@ -65,7 +68,7 @@ it does not mean a handler has run.
 | --- | --- |
 | `applicationId` | Required; 1–100 ASCII letters, digits, dots, underscores, or hyphens after trimming. Stored lowercase. |
 | `type` | Required nonblank name, at most 100 characters after trimming. Routing is case-insensitive. |
-| `payload` | Required non-null JSON value. The client validates its business meaning. |
+| `payload` | Required JSON object that matches the configured contract. Unknown fields and invalid values are rejected before persistence. |
 | `priority` | `Low`, `Normal`, `High`, or `Critical`; defaults to `Normal`. |
 | `maxRetries` | 0–10 automatic retries after the initial attempt; defaults to 3. |
 | `timeoutSeconds` | 1–3,600 seconds per attempt, starting at acquisition; defaults to 30. |
@@ -166,26 +169,28 @@ canceled. Replay preserves application, type, payload, priority, retry limit, an
 timeout, but creates a new ID with no idempotency key. Every successful replay
 request creates another job; the `Idempotency-Key` header is ignored on this route.
 
-Job reads and management routes are not access-controlled by application ID.
-Keep the API on a trusted network. Job data remains readable while workers are offline.
+Job reads and management routes are scoped to the application identified by the
+bearer key. Job data remains readable while workers are offline.
 
 ## Plain HTTP example
 
 With the server running, execute this entire block in PowerShell. It needs no .NET
 SDK or sample worker: PowerShell itself acquires the job, computes the sum, and
-reports it. A unique application ID keeps this example separate from other clients.
+reports it. Configure a dedicated `http-example` application with the `calculation`
+profile registered for `calculate-total` before running it.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 $api = 'http://localhost:8275'
-$applicationId = 'http-example-' + [Guid]::NewGuid().ToString('N')
+$applicationId = 'http-example'
+$headers = @{ Authorization = "Bearer $env:TaskForge__ApiKey" }
 $submission = @{
     applicationId = $applicationId
     type = 'calculate-total'
     payload = @{ values = @(1, 2, 3) }
     timeoutSeconds = 120
 } | ConvertTo-Json -Depth 5
-$job = Invoke-RestMethod "$api/api/jobs" -Method Post -ContentType 'application/json' -Body $submission
+$job = Invoke-RestMethod "$api/api/jobs" -Method Post -Headers $headers -ContentType 'application/json' -Body $submission
 
 $wait = @{
     applicationId = $applicationId
@@ -193,7 +198,7 @@ $wait = @{
     supportedTypes = @('calculate-total')
     waitSeconds = 0
 } | ConvertTo-Json
-$assignment = Invoke-RestMethod "$api/api/executions/wait" -Method Post -ContentType 'application/json' -Body $wait
+$assignment = Invoke-RestMethod "$api/api/executions/wait" -Method Post -Headers $headers -ContentType 'application/json' -Body $wait
 if ($null -eq $assignment -or $assignment.jobId -ne $job.id) { throw 'Expected the submitted job.' }
 
 $total = ($assignment.payload.values | Measure-Object -Sum).Sum
@@ -203,11 +208,11 @@ $report = @{
     result = @{ total = $total }
 } | ConvertTo-Json -Depth 5
 $reportUrl = "$api/api/jobs/$($assignment.jobId)/attempts/$($assignment.attemptId)/complete"
-$completed = Invoke-RestMethod $reportUrl -Method Post -ContentType 'application/json' -Body $report
+$completed = Invoke-RestMethod $reportUrl -Method Post -Headers $headers -ContentType 'application/json' -Body $report
 if ($completed.status -ne 'Completed' -or $completed.result.total -ne 6) { throw 'Unexpected result.' }
 
 $completed | Format-List id, status, result, retryCount
-$attempts = Invoke-RestMethod "$api/api/jobs/$($job.id)/attempts"
+$attempts = Invoke-RestMethod "$api/api/jobs/$($job.id)/attempts" -Headers $headers
 $attempts | Format-Table attemptNumber, outcome, workerId, durationMilliseconds -AutoSize
 ```
 

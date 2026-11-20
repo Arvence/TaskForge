@@ -40,7 +40,8 @@ using HttpClient http = new() { Timeout = Timeout.InfiniteTimeSpan };
 TaskForgeClient client = new(http, new()
 {
     BaseUrl = new Uri("http://localhost:8275"),
-    ApplicationId = "example-app"
+    ApplicationId = "example-app",
+    ApiKey = Environment.GetEnvironmentVariable("TaskForge__ApiKey")
 });
 
 builder.Services.AddSingleton(client);
@@ -68,6 +69,8 @@ public sealed class SumHandler(JobExecutionContext context) : IJobHandler<SumPay
 }
 ```
 
+Register `calculate-total` with the `calculation` profile for `example-app` and set
+`TaskForge__ApiKey` to its application key. See [server configuration](payload-contracts.md).
 Run `dotnet run --project artifacts/ExampleWorker`. It accepts `calculate-total`
 jobs for `example-app` with payloads such as `{"values":[1,2,3]}`. Job submission
 belongs in your application, separately from worker startup.
@@ -96,7 +99,8 @@ using HttpClient http = new() { Timeout = Timeout.InfiniteTimeSpan };
 TaskForgeClient client = new(http, new()
 {
     BaseUrl = new Uri("http://localhost:8275"),
-    ApplicationId = "example-app"
+    ApplicationId = "example-app",
+    ApiKey = Environment.GetEnvironmentVariable("TaskForge__ApiKey")
 });
 
 var payload = JsonSerializer.SerializeToElement(new { values = new[] { 1, 2, 3 } });
@@ -198,6 +202,7 @@ beside its executable, then environment overrides:
 | --- | --- |
 | `TaskForge__BaseUrl` | `http://localhost:8275` |
 | `TaskForge__ApplicationId` | `a-project` |
+| `TaskForge__ApiKey` | Required for job operations. Use the configured application key. |
 | `HttpRequestJobs__AllowedHosts__0` | `localhost` |
 | `HttpRequestJobs__AllowedHosts__1` | `127.0.0.1` |
 
@@ -213,7 +218,8 @@ dotnet run --project src/TaskForge.Debugging --configuration Release --no-build 
 dotnet run --project src/TaskForge.Debugging --configuration Release --no-build -- jobs --application-id a-project --status Completed
 ```
 
-The console prints a snapshot and exits. `dashboard` shows health, global
+Set `TaskForge__ApiKey` to the configured application key before starting the
+console. The console prints a snapshot and exits. `dashboard` shows health, application
 statistics, and five recent jobs. `jobs` shows up to 20 and supports
 `--application-id`, `--status`, `--type`, and `--priority`. Configure its base URL
 in [debugsettings.json](../src/TaskForge.Debugging/debugsettings.json).

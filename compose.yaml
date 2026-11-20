@@ -21,7 +21,10 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8275:8080"
+      - "127.0.0.1:8275:8080"
+    env_file:
+      - path: .taskforge-apps.env
+        required: false
     environment:
       ConnectionStrings__TaskForge: Server=sqlserver,1433;Database=TaskForge;User Id=sa;Password=${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env};Encrypt=True;TrustServerCertificate=True
     depends_on:

@@ -22,9 +22,10 @@ running API/database; no SDK or sample worker is required for these tests.
    `./setup.ps1`. Confirm [readiness](http://localhost:8275/api/ready) returns `Ready`.
 2. In Postman, select **Import** and choose
    `postman/TaskForge.postman_collection.json` from your local checkout.
-3. Select **No Environment**. The collection provides its own variables, including
-   `baseUrl = http://localhost:8275`. Set the request timeout to **30,000 ms** to
-   allow the automatic retry scenario to wait for its next assignment.
+3. Set the local `applicationId` and `apiKey` variables to a configured test
+   application. Configure the `generate-report` contract for it. Set the request
+   timeout to **30,000 ms** for the automatic retry scenario. Application Routing
+   also needs `otherApplicationId` and `otherApiKey` for a second test application.
 4. Open **02 — Feature Tests**, choose one scenario folder, and select **Run folder**.
    Run its requests in the displayed order with **one iteration** and **no added
    delay**, then review the assertions in the test results.
@@ -34,7 +35,8 @@ cancellation and replay, attempt ownership, application routing, and validation.
 Expected error responses are part of the negative tests.
 
 **Run one scenario folder at a time; do not run the entire collection at once.**
-The scenarios create isolated test jobs and report simulated worker outcomes.
+Run each scenario against a dedicated test application with an empty queue.
+The scenarios create test jobs and report simulated worker outcomes.
 Postman does not execute business handlers. Use **01 — API Explorer** to send
 individual requests; **03 — Advanced Verification** contains inspection requests.
 Concurrency, timeout recovery, and worker crash behavior are covered by the
@@ -76,6 +78,13 @@ The server runs in Docker. The sample worker runs on your host.
 ```powershell
 git clone https://github.com/Arvence/TaskForge.git
 cd TaskForge
+```
+
+Configure a local application key and the job contracts you want to use.
+See [application access and payload contracts](docs/payload-contracts.md). Then
+run setup from the repository root:
+
+```powershell
 ./setup.ps1
 ```
 
@@ -95,6 +104,7 @@ From the repository root, in the first terminal:
 ```powershell
 dotnet build TaskForge.sln --configuration Release
 $env:TaskForge__ApplicationId = 'a-project'
+$env:TaskForge__ApiKey = '<SAMPLE_APPLICATION_API_KEY>'
 dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run
 ```
 
@@ -107,6 +117,7 @@ In a second PowerShell terminal, from the repository root:
 
 ```powershell
 $env:TaskForge__ApplicationId = 'a-project'
+$env:TaskForge__ApiKey = '<SAMPLE_APPLICATION_API_KEY>'
 $submitted = dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Report submission failed.' }
 
@@ -147,8 +158,8 @@ inside a backend service or as separate processes.
 
 ## Execution and deployment boundaries
 
-- **Trusted networks:** the API has no authentication or authorization. Application
-  IDs route work; they do not restrict access to job data or management operations.
+- **Application access:** job operations require an application key. Keep the API
+  on a trusted network and use HTTPS when clients connect across hosts.
 - **Repeated execution:** retries and crash recovery can repeat business effects.
   Handlers must enforce idempotency where needed; TaskForge does not guarantee
   exactly-once external effects.

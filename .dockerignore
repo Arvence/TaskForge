@@ -16,3 +16,4 @@ artifacts/
 **/*.suo
 **/.env
 **/.env.*
+**/.taskforge-apps.env
