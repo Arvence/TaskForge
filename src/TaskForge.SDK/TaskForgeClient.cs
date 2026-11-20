@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -19,6 +20,7 @@ public sealed class TaskForgeClient
     private readonly HttpClient _httpClient;
     private readonly Uri _baseUrl;
     private readonly string _applicationId;
+    private readonly AuthenticationHeaderValue? _authorization;
     private readonly TimeSpan _requestTimeout;
 
     public TaskForgeClient(HttpClient httpClient, TaskForgeClientOptions options)
@@ -46,6 +48,7 @@ public sealed class TaskForgeClient
         _httpClient = httpClient;
         _baseUrl = new Uri(baseUrl.AbsoluteUri.TrimEnd('/') + "/");
         _applicationId = applicationId.ToLowerInvariant();
+        _authorization = string.IsNullOrEmpty(options.ApiKey) ? null : new("Bearer", options.ApiKey);
         _requestTimeout = options.RequestTimeout;
     }
 
@@ -119,6 +122,10 @@ public sealed class TaskForgeClient
         using CancellationTokenSource requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         requestTimeout.CancelAfter(timeout);
         using HttpRequestMessage request = new(method, new Uri(_baseUrl, path));
+        if (_authorization is not null)
+        {
+            request.Headers.Authorization = _authorization;
+        }
         if (body is not null)
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);

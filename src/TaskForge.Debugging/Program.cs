@@ -34,6 +34,10 @@ try
     };
     string version = typeof(DebugSettings).Assembly.GetName().Version!.ToString(3);
     httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"TaskForge.Debugging/{version}");
+    if (Environment.GetEnvironmentVariable("TaskForge__ApiKey") is { Length: > 0 } apiKey)
+    {
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+    }
 
     TaskForgeDebugClient client = new(httpClient);
     DebugConsole console = new(!Console.IsOutputRedirected);

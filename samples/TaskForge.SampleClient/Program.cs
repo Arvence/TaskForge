@@ -51,7 +51,8 @@ public static class Program
             TaskForgeClient client = new(http, new()
             {
                 BaseUrl = new Uri(builder.Configuration["TaskForge:BaseUrl"] ?? "http://localhost:8275"),
-                ApplicationId = builder.Configuration["TaskForge:ApplicationId"] ?? "a-project"
+                ApplicationId = builder.Configuration["TaskForge:ApplicationId"] ?? "a-project",
+                ApiKey = builder.Configuration["TaskForge:ApiKey"]
             });
             builder.Services.AddSingleton(client);
             builder.Services.AddSampleHandlers(builder.Configuration);
@@ -108,5 +109,6 @@ public static class Program
         Console.WriteLine("  submit-http <url>           Submit an HTTP GET for the client's allowed hosts.");
         Console.WriteLine("Append --run-at \"<ISO_8601_TIMESTAMP_WITH_OFFSET>\" to either submit command for one-time scheduling.");
         Console.WriteLine("Configure clientsettings.json or TaskForge__BaseUrl / TaskForge__ApplicationId environment variables.");
+        Console.WriteLine("Set TaskForge__ApiKey to the API key for the configured application.");
     }
 }
