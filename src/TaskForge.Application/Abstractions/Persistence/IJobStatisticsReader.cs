@@ -4,5 +4,5 @@ namespace TaskForge.Application.Abstractions.Persistence;
 
 public interface IJobStatisticsReader
 {
-    Task<JobStatistics> GetAsync(CancellationToken cancellationToken = default);
+    Task<JobStatistics> GetAsync(CancellationToken cancellationToken = default, string? applicationId = null);
 }

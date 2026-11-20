@@ -153,10 +153,10 @@ public sealed class IndependentClientsContractTests(SqlServerFixture fixture) : 
         }
     }
 
-    private WebApplicationFactory<global::Program> CreateServer() => new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder => builder
+    private WebApplicationFactory<global::Program> CreateServer() => new LifecycleApplicationFactory().WithWebHostBuilder(builder => builder
         .UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:PollIntervalMilliseconds", "50").UseSetting("Worker:RetryDelaySeconds", "1"));
 
-    private static TaskForgeClient Client(HttpClient http, string applicationId) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId });
+    private static TaskForgeClient Client(HttpClient http, string applicationId) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId, ApiKey = LifecycleApplicationFactory.KeyFor(applicationId) });
 
     private static IHost ReportHost(TaskForgeClient client, ReportState state) => new HostBuilder().ConfigureServices(services =>
     {

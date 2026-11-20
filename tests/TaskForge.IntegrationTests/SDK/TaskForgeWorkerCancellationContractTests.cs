@@ -164,10 +164,10 @@ public sealed class TaskForgeWorkerCancellationContractTests(SqlServerFixture fi
         }
     }
 
-    private WebApplicationFactory<Program> CreateServer() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder
+    private WebApplicationFactory<Program> CreateServer() => new LifecycleApplicationFactory().WithWebHostBuilder(builder => builder
         .UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:RetryDelaySeconds", "1").UseSetting("Worker:PollIntervalMilliseconds", "50"));
 
-    private static TaskForgeClient Client(HttpClient http) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "a-project" });
+    private static TaskForgeClient Client(HttpClient http) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "a-project", ApiKey = LifecycleApplicationFactory.KeyFor("a-project") });
 
     private static SubmitJobRequest Request(int timeout) => new("sdk-cancellation", JsonSerializer.SerializeToElement(new { value = 21 }), MaxRetries: 1, TimeoutSeconds: timeout);
 

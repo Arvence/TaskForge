@@ -18,7 +18,7 @@ public sealed class JobHandlerRegistryContractTests(SqlServerFixture fixture) : 
     {
         await using WebApplicationFactory<Program> server = CreateServer();
         using HttpClient http = server.CreateClient();
-        TaskForgeClient client = new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "registry-client" });
+        TaskForgeClient client = new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "registry-client", ApiKey = LifecycleApplicationFactory.KeyFor("registry-client") });
         ServiceCollection services = new();
         services.AddSingleton<ExecutionState>();
         services.AddScoped<ExecutionDependency>();
@@ -53,7 +53,7 @@ public sealed class JobHandlerRegistryContractTests(SqlServerFixture fixture) : 
     {
         await using WebApplicationFactory<Program> server = CreateServer();
         using HttpClient http = server.CreateClient();
-        TaskForgeClient client = new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "registry-client" });
+        TaskForgeClient client = new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "registry-client", ApiKey = LifecycleApplicationFactory.KeyFor("registry-client") });
         ServiceCollection services = new();
         services.AddSingleton<ExecutionState>();
         services.AddScoped<ExecutionDependency>();
@@ -72,7 +72,7 @@ public sealed class JobHandlerRegistryContractTests(SqlServerFixture fixture) : 
         Assert.Equal(JobAttemptOutcome.PermanentlyFailed, Assert.Single(await client.GetAttemptsAsync(submitted.Id)).Outcome);
     }
 
-    private WebApplicationFactory<Program> CreateServer() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString));
+    private WebApplicationFactory<Program> CreateServer() => new LifecycleApplicationFactory().WithWebHostBuilder(builder => builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString));
 
     public sealed record SumPayload(int Left, int Right);
 

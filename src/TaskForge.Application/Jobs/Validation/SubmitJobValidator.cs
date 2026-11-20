@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 using TaskForge.Application.Jobs.Models;
@@ -5,7 +6,7 @@ using TaskForge.Domain.Jobs;
 
 namespace TaskForge.Application.Jobs.Validation;
 
-public sealed class SubmitJobValidator
+public sealed class SubmitJobValidator(IJobPayloadPolicy? payloadPolicy = null)
 {
     public IReadOnlyDictionary<string, string[]> Validate(SubmitJobCommand command, string? idempotencyKey = null)
     {
@@ -17,7 +18,8 @@ public sealed class SubmitJobValidator
             ? null
             : "Application ID must contain 1 to 100 ASCII letters, digits, dots, underscores, or hyphens.");
         AddError(errors, "Type", ValidateType(command.Type));
-        AddError(errors, "Payload", ValidateJsonPayload(command.PayloadJson));
+        bool validJobIdentity = !errors.ContainsKey("ApplicationId") && !errors.ContainsKey("Type");
+        AddError(errors, "Payload", ValidatePayload(command, validJobIdentity));
         AddError(errors, "Priority", ValidatePriority(command.Priority));
         AddError(errors, "MaxRetries", ValidateMaxRetries(command.MaxRetries));
         AddError(errors, "TimeoutSeconds", ValidateTimeoutSeconds(command.TimeoutSeconds));
@@ -46,18 +48,23 @@ public sealed class SubmitJobValidator
             : null;
     }
 
-    private static string? ValidateJsonPayload(string payloadJson)
+    private string? ValidatePayload(SubmitJobCommand command, bool validJobIdentity)
     {
-        if (string.IsNullOrWhiteSpace(payloadJson))
+        if (string.IsNullOrWhiteSpace(command.PayloadJson))
         {
             return "Job payload is required.";
         }
 
         try
         {
-            using JsonDocument payload = JsonDocument.Parse(payloadJson);
-            return payload.RootElement.ValueKind is JsonValueKind.Null
-                ? "Job payload is required."
+            using JsonDocument payload = JsonDocument.Parse(command.PayloadJson);
+            if (payload.RootElement.ValueKind is JsonValueKind.Null)
+            {
+                return "Job payload is required.";
+            }
+
+            return validJobIdentity
+                ? payloadPolicy?.Validate(JobApplicationId.Normalize(command.ApplicationId), command.Type.Trim(), payload.RootElement, Encoding.UTF8.GetByteCount(command.PayloadJson))
                 : null;
         }
         catch (JsonException)

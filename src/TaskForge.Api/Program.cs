@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.OpenApi;
 
 using TaskForge.Api.Jobs;
 using TaskForge.Application.Abstractions.Persistence;
@@ -30,14 +31,17 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.Configure<Microsoft.AspNetCore.Mvc.JsonOptions>(options =>
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options => options.SwaggerDoc("v1", new()
+builder.Services.AddSwaggerGen(options =>
 {
-    Title = "TaskForge.Api",
-    Version = typeof(Program).Assembly.GetName().Version!.ToString(3)
-}));
+    options.SwaggerDoc("v1", new() { Title = "TaskForge.Api", Version = typeof(Program).Assembly.GetName().Version!.ToString(3) });
+    options.AddSecurityDefinition(JobAccessOpenApiFilter.SchemeName, new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "bearer" });
+    options.OperationFilter<JobAccessOpenApiFilter>();
+});
 builder.Services.AddProblemDetails();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<JobAccess>();
+builder.Services.AddSingleton<IJobPayloadPolicy, JobPayloadPolicy>();
 builder.Services.AddScoped<SubmitJobValidator>();
 builder.Services.AddScoped<JobManager>();
 builder.Services.AddScoped<JobCancellationService>();
@@ -66,6 +70,8 @@ builder.Services.AddTaskForgeSqlServer(connectionString);
 
 var app = builder.Build();
 
+JobAccess jobAccess = app.Services.GetRequiredService<JobAccess>();
+_ = app.Services.GetRequiredService<IJobPayloadPolicy>();
 await app.Services.InitializeTaskForgeDatabaseAsync();
 
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
@@ -79,14 +85,17 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 }));
 
 app.UseStatusCodePages();
+app.UseRouting();
+app.Use(jobAccess.AuthorizeAsync);
 
 app.UseSwagger(options =>
     options.RouteTemplate = "openapi/{documentName}.json");
 
 app.MapGet("/", () => Results.Redirect("/api/health"))
     .Produces(StatusCodes.Status302Found);
-app.MapTaskForgeExecutionWaitEndpoint();
-app.MapTaskForgeExecutionEndpoints();
+var protectedJobs = app.MapGroup(string.Empty).WithMetadata(new RequiresApplicationKey());
+protectedJobs.MapTaskForgeExecutionWaitEndpoint();
+protectedJobs.MapTaskForgeExecutionEndpoints();
 
 app.MapGet("/api/health", () => Results.Ok(new HealthResponse("Healthy", "TaskForge.Api", DateTimeOffset.UtcNow)))
     .WithName("GetHealth")
@@ -108,14 +117,14 @@ app.MapGet("/api/ready", async (TaskForgeDbContext dbContext, CancellationToken 
     .Produces<ReadinessResponse>(StatusCodes.Status200OK)
     .Produces<ReadinessResponse>(StatusCodes.Status503ServiceUnavailable);
 
-app.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, CancellationToken cancellationToken) =>
-    Results.Ok(await statisticsReader.GetAsync(cancellationToken)))
+protectedJobs.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, HttpContext context, CancellationToken cancellationToken) =>
+    Results.Ok(await statisticsReader.GetAsync(cancellationToken, JobAccess.RequireApplication(context))))
     .WithName("GetStats")
     .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Stats")
-    .WithSummary("Get current status counts for all stored jobs.")
+    .WithSummary("Get current status counts for the authenticated application.")
     .WithDescription(
-        "Includes every job in the database without filtering or pagination. "
+        "Includes every job for the authenticated application without pagination. "
         + "Counts reflect current states, not historical transitions or attempts. Missing statuses have zero counts. "
         + "totalJobs is the sum of all seven status counts; there is no separate Failed status. "
         + "Consecutive responses may differ while workers update jobs. "
@@ -125,11 +134,16 @@ app.MapGet("/api/stats", async (IJobStatisticsReader statisticsReader, Cancellat
         + "Success rate is completed / (completed + deadLettered) * 100, rounded to two decimal places "
         + "with midpoint ties away from zero; it is null when the denominator is zero. "
         + "Pending, queued, processing, retrying, and cancelled jobs are excluded from the denominator. "
-        + "An empty database returns 200 OK with zero counts and a null success rate.")
+        + "An application with no jobs returns 200 OK with zero counts and a null success rate.")
     .Produces<JobStatistics>(StatusCodes.Status200OK);
 
-app.MapPost("/api/jobs", async Task<IResult> (SubmitJobRequest request, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, JobManager jobManager, CancellationToken cancellationToken) =>
+protectedJobs.MapPost("/api/jobs", async Task<IResult> (SubmitJobRequest request, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, JobManager jobManager, HttpContext context, CancellationToken cancellationToken) =>
 {
+    if (JobAccess.ClaimsOtherApplication(context, request.ApplicationId))
+    {
+        return JobAccess.Forbidden();
+    }
+
     try
     {
         JobSubmissionResult submission = await jobManager.SubmitAsync(
@@ -153,6 +167,7 @@ app.MapPost("/api/jobs", async Task<IResult> (SubmitJobRequest request, [FromHea
     }
 })
     .WithName("SubmitJob")
+    .WithMetadata(new RequestSizeLimitAttribute(32 * 1024))
     .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Submit a durable background job.")
@@ -161,14 +176,20 @@ app.MapPost("/api/jobs", async Task<IResult> (SubmitJobRequest request, [FromHea
     .Produces<JobResponse>(StatusCodes.Status200OK)
     .ProducesValidationProblem()
     .Produces<IdempotencyConflictResponse>(StatusCodes.Status409Conflict)
+    .ProducesProblem(StatusCodes.Status413PayloadTooLarge)
     .ProducesProblem(StatusCodes.Status415UnsupportedMediaType);
 
-app.MapGet("/api/jobs", async Task<IResult> (JobManager jobManager, CancellationToken cancellationToken, [FromQuery] JobStatus? status = null, [FromQuery] string? type = null, [FromQuery] JobPriority? priority = null, [FromQuery] int page = 1, [FromQuery] int pageSize = ListJobsQuery.DefaultPageSize, [FromQuery] string? applicationId = null) =>
+protectedJobs.MapGet("/api/jobs", async Task<IResult> (JobManager jobManager, HttpContext context, CancellationToken cancellationToken, [FromQuery] JobStatus? status = null, [FromQuery] string? type = null, [FromQuery] JobPriority? priority = null, [FromQuery] int page = 1, [FromQuery] int pageSize = ListJobsQuery.DefaultPageSize, [FromQuery] string? applicationId = null) =>
 {
+    if (JobAccess.ClaimsOtherApplication(context, applicationId))
+    {
+        return JobAccess.Forbidden();
+    }
+
     try
     {
         JobPage result = await jobManager.GetPageAsync(
-            new ListJobsQuery(status, type, priority, page, pageSize, applicationId),
+            new ListJobsQuery(status, type, priority, page, pageSize, applicationId ?? JobAccess.RequireApplication(context)),
             cancellationToken);
         return Results.Ok(JobPageResponse.From(result));
     }
@@ -185,10 +206,10 @@ app.MapGet("/api/jobs", async Task<IResult> (JobManager jobManager, Cancellation
     .Produces<JobPageResponse>()
     .ProducesValidationProblem();
 
-app.MapGet("/api/jobs/{id:guid}", async Task<IResult> (Guid id, JobManager jobManager, CancellationToken cancellationToken) =>
+protectedJobs.MapGet("/api/jobs/{id:guid}", async Task<IResult> (Guid id, JobManager jobManager, HttpContext context, CancellationToken cancellationToken) =>
 {
     Job? job = await jobManager.GetByIdAsync(id, cancellationToken);
-    return job is not null
+    return job is not null && JobAccess.MayAccess(context, job.ApplicationId)
         ? Results.Ok(JobResponse.From(job))
         : Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found."));
 })
@@ -199,8 +220,13 @@ app.MapGet("/api/jobs/{id:guid}", async Task<IResult> (Guid id, JobManager jobMa
     .Produces<JobResponse>()
     .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound);
 
-app.MapGet("/api/jobs/{id:guid}/attempts", async Task<IResult> (Guid id, IJobAttemptReader attemptReader, CancellationToken cancellationToken) =>
+protectedJobs.MapGet("/api/jobs/{id:guid}/attempts", async Task<IResult> (Guid id, IJobAttemptReader attemptReader, JobManager jobManager, HttpContext context, CancellationToken cancellationToken) =>
 {
+    if (!await MayAccessJobAsync(id, jobManager, context, cancellationToken))
+    {
+        return Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found."));
+    }
+
     JobAttemptHistory? history = await attemptReader.GetAttemptsAsync(id, cancellationToken);
     return history is null
         ? Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found."))
@@ -214,8 +240,13 @@ app.MapGet("/api/jobs/{id:guid}/attempts", async Task<IResult> (Guid id, IJobAtt
     .Produces<JobAttemptResponse[]>()
     .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound);
 
-app.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManager jobManager, CancellationToken cancellationToken) =>
+protectedJobs.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManager jobManager, HttpContext context, CancellationToken cancellationToken) =>
 {
+    if (!await MayAccessJobAsync(id, jobManager, context, cancellationToken))
+    {
+        return Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found."));
+    }
+
     try
     {
         JobReplayResult result = await jobManager.ReplayAsync(id, cancellationToken);
@@ -247,8 +278,13 @@ app.MapPost("/api/jobs/{id:guid}/retry", async Task<IResult> (Guid id, JobManage
     .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound)
     .Produces<JobConflictResponse>(StatusCodes.Status409Conflict);
 
-app.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (Guid id, JobCancellationService cancellationService, CancellationToken cancellationToken) =>
+protectedJobs.MapPost("/api/jobs/{id:guid}/cancel", async Task<IResult> (Guid id, JobCancellationService cancellationService, JobManager jobManager, HttpContext context, CancellationToken cancellationToken) =>
 {
+    if (!await MayAccessJobAsync(id, jobManager, context, cancellationToken))
+    {
+        return Results.NotFound(new ApiErrorResponse($"Job '{id}' was not found."));
+    }
+
     JobCancellationResult result = await cancellationService.RequestAsync(
         id,
         cancellationToken);
@@ -291,6 +327,9 @@ app.MapPut("/api/workers/count", () => Results.Problem(
     .ProducesProblem(StatusCodes.Status410Gone);
 
 app.Run();
+
+static async Task<bool> MayAccessJobAsync(Guid id, JobManager manager, HttpContext context, CancellationToken cancellationToken) =>
+    await manager.GetByIdAsync(id, cancellationToken) is { } job && JobAccess.MayAccess(context, job.ApplicationId);
 
 public partial class Program
 {

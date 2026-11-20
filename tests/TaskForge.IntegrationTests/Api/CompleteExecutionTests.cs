@@ -33,7 +33,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
     {
         JobExecutionAssignment assignment = await AssignAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
 
         using HttpResponseMessage response = await PostAsync(client, assignment, json);
 
@@ -70,7 +70,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
         JobExecutionAssignment assignment = await AssignAsync();
         string snapshot = await SnapshotAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         string json = "\"" + new string('x', length - 2) + "\"";
 
         using HttpResponseMessage response = await PostAsync(client, assignment, json);
@@ -100,7 +100,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
     {
         JobExecutionAssignment assignment = await AssignAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage accepted = await PostAsync(client, assignment, first);
         Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
         string snapshot = await SnapshotAsync();
@@ -124,7 +124,12 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
         JobExecutionAssignment assignment = await AssignAsync();
         string snapshot = await SnapshotAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
+
+        if (applicationId == "other-app")
+        {
+            LifecycleApplicationFactory.SetApplication(client, applicationId);
+        }
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(Route(assignment), new { applicationId, workerId, result = new { ok = true } });
 
@@ -138,7 +143,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
         JobExecutionAssignment assignment = await AssignAsync();
         string snapshot = await SnapshotAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
 
         using HttpResponseMessage response = await PostAsync(client, assignment, "{\"invalid\":}");
 
@@ -161,7 +166,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
         }
 
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage response = await PostAsync(client, assignment, "{\"late\":true}");
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
@@ -198,7 +203,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
 
         string snapshot = await SnapshotAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage response = await PostAsync(client, old, "{}");
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
@@ -208,7 +213,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
     [Fact]
     public async Task Normal_startup_registers_execution_reporting()
     {
-        await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        await using WebApplicationFactory<Program> factory = new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
         });
@@ -235,7 +240,7 @@ public sealed class CompleteExecutionTests(SqlServerFixture fixture) : SqlServer
         builder.Services.AddSingleton<JobRetryPolicy>();
         builder.Services.AddTaskForgeExecutionReporting();
         WebApplication app = builder.Build();
-        app.MapTaskForgeExecutionEndpoints();
+        LifecycleApplicationFactory.ProtectRoutes(app).MapTaskForgeExecutionEndpoints();
         await app.StartAsync();
         return app;
     }

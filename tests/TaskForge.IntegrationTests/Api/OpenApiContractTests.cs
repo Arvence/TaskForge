@@ -12,11 +12,15 @@ public sealed class OpenApiContractTests(SqlServerFixture fixture) : SqlServerTe
     [Fact]
     public async Task Server_operations_describe_success_error_and_history_schemas()
     {
-        await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        await using WebApplicationFactory<Program> factory = new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
             builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString));
         using HttpClient client = factory.CreateClient();
         JsonElement document = await client.GetFromJsonAsync<JsonElement>("/openapi/v1.json");
         JsonElement paths = document.GetProperty("paths");
+        JsonElement submit = paths.GetProperty("/api/jobs").GetProperty("post");
+        Assert.True(submit.GetProperty("security")[0].TryGetProperty("applicationKey", out _));
+        Assert.True(submit.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.False(paths.GetProperty("/api/health").GetProperty("get").TryGetProperty("security", out _));
         AssertResponse(paths, "/api/health", "get", "200", "HealthResponse");
         AssertResponse(paths, "/api/ready", "get", "200", "ReadinessResponse");
         AssertResponse(paths, "/api/ready", "get", "503", "ReadinessResponse");

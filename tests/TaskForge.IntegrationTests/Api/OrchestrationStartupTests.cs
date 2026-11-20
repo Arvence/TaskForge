@@ -76,6 +76,7 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
     {
         await using WebApplicationFactory<Program> factory = CreateFactory();
         using HttpClient client = factory.CreateClient();
+        LifecycleApplicationFactory.SetApplication(client, "client-app");
         using HttpResponseMessage submitted = await client.PostAsJsonAsync("/api/jobs",
             new { applicationId = "client-app", type, payload = new { value = 1 } });
         Assert.Equal(HttpStatusCode.Created, submitted.StatusCode);
@@ -166,7 +167,7 @@ public sealed class OrchestrationStartupTests(SqlServerFixture fixture) : SqlSer
         Assert.True(paths.GetProperty(route).GetProperty(method.ToLowerInvariant()).GetProperty("responses").TryGetProperty("410", out _));
     }
 
-    private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateFactory() => new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
         builder.UseSetting("Worker:PollIntervalMilliseconds", "50");

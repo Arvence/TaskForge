@@ -149,9 +149,9 @@ public sealed class JobCancellationTests(SqlServerFixture fixture) : SqlServerTe
         builder.Services.AddSingleton<JobRetryPolicy>();
         builder.Services.AddTaskForgeExecutionReporting();
         await using WebApplication app = builder.Build();
-        app.MapTaskForgeExecutionEndpoints();
+        LifecycleApplicationFactory.ProtectRoutes(app).MapTaskForgeExecutionEndpoints();
         await app.StartAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         foreach (string operation in new[] { "complete", "fail", "complete", "fail" })
         {
             using HttpResponseMessage response = await client.PostAsJsonAsync($"/api/jobs/{job.Id}/attempts/{attempt.Id}/{operation}",
@@ -311,7 +311,7 @@ public sealed class JobCancellationTests(SqlServerFixture fixture) : SqlServerTe
         return job;
     }
 
-    private WebApplicationFactory<Program> CreateFactory(bool maintenanceEnabled = true) => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateFactory(bool maintenanceEnabled = true) => new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
         if (!maintenanceEnabled)

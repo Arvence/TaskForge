@@ -47,17 +47,17 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
         await WaitUntilAsync(() => proxy.Workers.Count == 3, deadline.Token, firstA, secondA, clientB);
         TaskForgeClient a = Client(http, "a-project");
         TaskForgeClient b = Client(http, "b-project");
-        JobResponse[] jobs =
+        (TaskForgeClient Owner, JobResponse Job)[] jobs =
         [
-            await SampleJobs.SubmitReportAsync(a, new("A-one", [new("A", 10m)]), deadline.Token),
-            await SampleJobs.SubmitReportAsync(a, new("A-two", [new("A", 20m)]), deadline.Token),
-            await SampleJobs.SubmitReportAsync(b, new("B-one", [new("B", 30m)]), deadline.Token)
+            (a, await SampleJobs.SubmitReportAsync(a, new("A-one", [new("A", 10m)]), deadline.Token)),
+            (a, await SampleJobs.SubmitReportAsync(a, new("A-two", [new("A", 20m)]), deadline.Token)),
+            (b, await SampleJobs.SubmitReportAsync(b, new("B-one", [new("B", 30m)]), deadline.Token))
         ];
         List<JobAttemptResponse> attempts = [];
-        foreach (JobResponse job in jobs)
+        foreach ((TaskForgeClient owner, JobResponse job) in jobs)
         {
-            JobResponse completed = await WaitForCompletedAsync(a, job.Id, deadline.Token, firstA, secondA, clientB);
-            JobAttemptResponse attempt = Assert.Single(await a.GetAttemptsAsync(job.Id, deadline.Token));
+            JobResponse completed = await WaitForCompletedAsync(owner, job.Id, deadline.Token, firstA, secondA, clientB);
+            JobAttemptResponse attempt = Assert.Single(await owner.GetAttemptsAsync(job.Id, deadline.Token));
             Assert.Equal(JobAttemptOutcome.Succeeded, attempt.Outcome);
             Assert.Equal(job.ApplicationId, proxy.Workers[attempt.WorkerId]);
             Assert.Equal(0, completed.RetryCount);
@@ -126,10 +126,10 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
         Assert.Contains($"attempt 2 ({history[1].AttemptId})", await replacement.Output);
     }
 
-    private WebApplicationFactory<global::Program> CreateServer() => new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder => builder
+    private WebApplicationFactory<global::Program> CreateServer() => new LifecycleApplicationFactory().WithWebHostBuilder(builder => builder
         .UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:PollIntervalMilliseconds", "50").UseSetting("Worker:RetryDelaySeconds", "1"));
 
-    private static TaskForgeClient Client(HttpClient http, string applicationId) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId });
+    private static TaskForgeClient Client(HttpClient http, string applicationId) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId, ApiKey = LifecycleApplicationFactory.KeyFor(applicationId) });
 
     private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken cancellationToken, params SampleProcess[] processes)
     {
@@ -189,6 +189,7 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
             start.ArgumentList.Add("run");
             start.Environment["TaskForge__BaseUrl"] = baseUrl;
             start.Environment["TaskForge__ApplicationId"] = applicationId;
+            start.Environment["TaskForge__ApiKey"] = LifecycleApplicationFactory.KeyFor(applicationId);
             start.Environment["DOTNET_ENVIRONMENT"] = "Production";
             _process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the sample client.");
             Output = _process.StandardOutput.ReadToEndAsync();
@@ -263,6 +264,7 @@ public sealed class SampleClientProcessTests(SqlServerFixture fixture) : SqlServ
         {
             string path = context.Request.Path.Value!;
             using HttpRequestMessage request = new(new HttpMethod(context.Request.Method), path + context.Request.QueryString);
+            request.Headers.TryAddWithoutValidation("Authorization", context.Request.Headers.Authorization.ToArray());
             if (context.Request.Method == "POST")
             {
                 using StreamReader reader = new(context.Request.Body);

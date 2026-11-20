@@ -37,8 +37,13 @@ public static class ExecutionEndpointRegistration
         return endpoints;
     }
 
-    private static async Task<IResult> CompleteAsync(Guid jobId, Guid attemptId, CompleteExecutionRequest request, JobExecutionService service, CancellationToken cancellationToken)
+    private static async Task<IResult> CompleteAsync(Guid jobId, Guid attemptId, CompleteExecutionRequest request, JobExecutionService service, HttpContext context, CancellationToken cancellationToken)
     {
+        if (JobAccess.ClaimsOtherApplication(context, request.ApplicationId))
+        {
+            return JobAccess.Forbidden();
+        }
+
         try
         {
             ExecutionReportResult result = await service.CompleteAsync(
@@ -51,8 +56,13 @@ public static class ExecutionEndpointRegistration
         }
     }
 
-    private static async Task<IResult> FailAsync(Guid jobId, Guid attemptId, FailExecutionRequest request, JobExecutionService service, CancellationToken cancellationToken)
+    private static async Task<IResult> FailAsync(Guid jobId, Guid attemptId, FailExecutionRequest request, JobExecutionService service, HttpContext context, CancellationToken cancellationToken)
     {
+        if (JobAccess.ClaimsOtherApplication(context, request.ApplicationId))
+        {
+            return JobAccess.Forbidden();
+        }
+
         try
         {
             ExecutionReportResult result = await service.FailAsync(

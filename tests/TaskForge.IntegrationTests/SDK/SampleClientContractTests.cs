@@ -105,10 +105,10 @@ public sealed class SampleClientContractTests(SqlServerFixture fixture) : SqlSer
         }
     }
 
-    private WebApplicationFactory<global::Program> CreateServer() => new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder => builder
+    private WebApplicationFactory<global::Program> CreateServer() => new LifecycleApplicationFactory().WithWebHostBuilder(builder => builder
         .UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:PollIntervalMilliseconds", "50"));
 
-    private static TaskForgeClient Client(HttpClient http) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "a-project" });
+    private static TaskForgeClient Client(HttpClient http) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "a-project", ApiKey = LifecycleApplicationFactory.KeyFor("a-project") });
 
     private static IHost CreateSample(TaskForgeClient client) => new HostBuilder().ConfigureServices(services =>
     {

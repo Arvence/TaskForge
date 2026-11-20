@@ -17,7 +17,7 @@ internal sealed class DebugConsole(bool useColor)
         WriteField("API time", FormatTimestamp(health.TimestampUtc));
 
         Console.WriteLine();
-        WriteSection("JOB STATISTICS (ALL APPLICATIONS)");
+        WriteSection("APPLICATION JOB STATISTICS");
         WriteField("Total jobs", statistics.TotalJobs.ToString());
         JobStatusCounts counts = statistics.CountsByStatus;
         WriteField("Pending", counts.Pending.ToString());
@@ -55,7 +55,7 @@ internal sealed class DebugConsole(bool useColor)
         Console.WriteLine("TaskForge.Debugging");
         Console.WriteLine();
         Console.WriteLine("  dashboard");
-        Console.WriteLine("      Show API health, global job statistics, and the five newest jobs.");
+        Console.WriteLine("      Show API health, application job statistics, and the five newest jobs.");
         Console.WriteLine();
         Console.WriteLine("  jobs [--application-id ID] [--status STATUS] [--type TYPE] [--priority PRIORITY]");
         Console.WriteLine("      List up to 20 jobs using any combination of filters.");

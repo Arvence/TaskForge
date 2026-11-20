@@ -31,7 +31,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         Job job = await SeedAsync();
         await SeedAsync();
-        await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        await using WebApplicationFactory<Program> factory = new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
         });
@@ -71,7 +71,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         PollObserver observer = new();
         await using WebApplication app = await CreateAppAsync(observer);
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         Task<HttpResponseMessage> waiting = PostAsync(client, waitSeconds: 3);
         await observer.FirstDisposed.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(0, observer.ActiveScopes);
@@ -94,7 +94,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         PollObserver observer = new();
         await using WebApplication app = await CreateAppAsync(observer);
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         Stopwatch elapsed = Stopwatch.StartNew();
         using HttpResponseMessage response = await PostAsync(client, waitSeconds);
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
@@ -113,7 +113,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         Job job = await SeedAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         await using TaskForgeDbContext blocker = new(DatabaseOptions);
         await using var transaction = await blocker.Database.BeginTransactionAsync();
         await blocker.Database.ExecuteSqlInterpolatedAsync($"UPDATE [Jobs] SET [Version] = [Version] WHERE [Id] = {job.Id}");
@@ -132,7 +132,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     public async Task Future_retry_becomes_eligible_during_wait()
     {
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         Job job = new(Guid.NewGuid(), "test-app", "remote-only", "{}", JobPriority.Normal, 3, 300, now.AddMinutes(-10));
         job.Queue(now.AddMinutes(-10));
@@ -167,7 +167,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         await SeedAsync(applicationId, type);
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage response = await PostAsync(client);
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         await using TaskForgeDbContext read = new(DatabaseOptions);
@@ -199,7 +199,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         PollObserver observer = new();
         await using WebApplication app = await CreateAppAsync(observer);
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage response = await client.PostAsJsonAsync("/api/executions/wait", request);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -214,7 +214,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         string type = new('t', 100);
         await SeedAsync(applicationId, type);
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app, applicationId);
         using HttpResponseMessage response = await client.PostAsJsonAsync("/api/executions/wait",
             new WaitForExecutionRequest(applicationId, new string('w', 200), Enumerable.Repeat<string?>(type, 100).ToArray(), 30));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -227,7 +227,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         PauseBeforeSave pause = new();
         PollObserver observer = new();
         await using WebApplication app = await CreateAppAsync(observer, [pause]);
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using CancellationTokenSource disconnected = new();
         Task<HttpResponseMessage> waiting = PostAsync(client, 30, cancellationToken: disconnected.Token);
         await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -247,7 +247,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
         PauseAfterCommit pause = new();
         PollObserver observer = new();
         await using WebApplication app = await CreateAppAsync(observer, [pause]);
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using CancellationTokenSource disconnected = new();
         Task<HttpResponseMessage> waiting = PostAsync(client, 30, cancellationToken: disconnected.Token);
         await pause.Committed.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -287,7 +287,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         PollObserver observer = new();
         await using WebApplication app = await CreateAppAsync(observer);
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         Task<HttpResponseMessage> waiting = PostAsync(client, waitSeconds: 30);
         await observer.FirstDisposed.Task.WaitAsync(TimeSpan.FromSeconds(10));
         app.Services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
@@ -301,7 +301,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
     {
         Job job = await SeedAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         HttpResponseMessage[] responses = await Task.WhenAll(Enumerable.Range(0, 8).Select(index => PostAsync(client, workerId: $"worker-{index}")));
         try
         {
@@ -340,7 +340,7 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
 
         await seed.SaveChangesAsync();
         await using WebApplication app = await CreateAppAsync(clock: new SkewedClock(TimeSpan.FromHours(clockOffsetHours)));
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage response = await PostAsync(client);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         ExecutionAssignmentResponse assignment = (await response.Content.ReadFromJsonAsync<ExecutionAssignmentResponse>())!;
@@ -378,8 +378,9 @@ public sealed class WaitForExecutionTests(SqlServerFixture fixture) : SqlServerT
             return provider.GetRequiredService<EfCoreJobStore>();
         });
         WebApplication app = builder.Build();
-        app.MapTaskForgeExecutionWaitEndpoint();
-        app.MapTaskForgeExecutionEndpoints();
+        var executions = LifecycleApplicationFactory.ProtectRoutes(app);
+        executions.MapTaskForgeExecutionWaitEndpoint();
+        executions.MapTaskForgeExecutionEndpoints();
         await app.StartAsync();
         return app;
     }

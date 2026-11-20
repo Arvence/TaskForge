@@ -116,10 +116,10 @@ public sealed class TaskForgeWorkerContractTests(SqlServerFixture fixture) : Sql
         }
     }
 
-    private WebApplicationFactory<Program> CreateServer() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateServer() => new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:RetryDelaySeconds", "1"));
 
-    private static TaskForgeClient Client(HttpClient http, string applicationId) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId });
+    private static TaskForgeClient Client(HttpClient http, string applicationId) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId, ApiKey = LifecycleApplicationFactory.KeyFor(applicationId) });
 
     private static SubmitJobRequest Request(string name) => new("sdk-work", JsonSerializer.SerializeToElement(new { name, value = 21 }));
 

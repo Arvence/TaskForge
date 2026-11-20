@@ -24,7 +24,7 @@ public sealed class TaskForgeWorkerDeliveryContractTests(SqlServerFixture fixtur
     [InlineData(true, false)]
     public async Task Uncertain_delivery_repeats_the_outcome_without_reexecuting_or_consuming_extra_job_retries(bool failure, bool dropAcknowledgement)
     {
-        await using WebApplicationFactory<Program> server = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder
+        await using WebApplicationFactory<Program> server = new LifecycleApplicationFactory().WithWebHostBuilder(builder => builder
             .UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:RetryDelaySeconds", "30"));
         using HttpClient http = server.CreateClient();
         TaskForgeClient client = Client(http);
@@ -93,7 +93,7 @@ public sealed class TaskForgeWorkerDeliveryContractTests(SqlServerFixture fixtur
     [Fact]
     public async Task Lost_assignment_response_times_out_and_same_worker_executes_only_the_replacement_attempt()
     {
-        await using WebApplicationFactory<Program> server = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder
+        await using WebApplicationFactory<Program> server = new LifecycleApplicationFactory().WithWebHostBuilder(builder => builder
             .UseSetting("ConnectionStrings:TaskForge", ConnectionString).UseSetting("Worker:RetryDelaySeconds", "1"));
         using HttpClient http = server.CreateClient();
         TaskForgeClient client = Client(http);
@@ -134,7 +134,7 @@ public sealed class TaskForgeWorkerDeliveryContractTests(SqlServerFixture fixtur
         }
     }
 
-    private static TaskForgeClient Client(HttpClient http) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "a-project" });
+    private static TaskForgeClient Client(HttpClient http) => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = "a-project", ApiKey = LifecycleApplicationFactory.KeyFor("a-project") });
 
     private sealed class LostAssignmentProbe : DelegatingHandler
     {

@@ -172,7 +172,7 @@ public sealed class JobReplayTests(SqlServerFixture fixture) : SqlServerTest(fix
         Assert.Equal(2, await context.Jobs.CountAsync());
     }
 
-    private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateFactory() => new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
     });

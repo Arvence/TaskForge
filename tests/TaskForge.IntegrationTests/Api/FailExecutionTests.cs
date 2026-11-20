@@ -35,7 +35,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
     {
         JobExecutionAssignment assignment = await AssignAsync(maxRetries: maxRetries);
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         DateTimeOffset before = await SqlNowAsync();
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(Route(assignment), new
@@ -84,7 +84,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
         JobExecutionAssignment assignment = await AssignAsync();
         string snapshot = await SnapshotAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         string code = new('c', codeLength), message = new('m', messageLength);
 
         using HttpResponseMessage response = await PostAsync(client, assignment, " " + code + " ", " " + message + " ");
@@ -116,7 +116,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
         JobExecutionAssignment assignment = await AssignAsync();
         string snapshot = await SnapshotAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
 
         using HttpResponseMessage response = await PostAsync(client, assignment, code, message);
 
@@ -133,7 +133,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
     {
         JobExecutionAssignment old = await AssignAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage first = await PostAsync(client, old, "Failure", "Failed.");
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         JobExecutionAssignment current;
@@ -177,7 +177,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
     {
         JobExecutionAssignment assignment = await AssignAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage complete = await client.PostAsJsonAsync(Route(assignment, "complete"), new { applicationId = "test-app", workerId = "worker-01" });
         Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
         string snapshot = await SnapshotAsync();
@@ -198,7 +198,12 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
         JobExecutionAssignment assignment = await AssignAsync();
         string snapshot = await SnapshotAsync();
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
+
+        if (applicationId == "other-app")
+        {
+            LifecycleApplicationFactory.SetApplication(client, applicationId);
+        }
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(Route(assignment), new { applicationId, workerId, errorCode = "Failure", errorMessage = "Failed." });
 
@@ -221,7 +226,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
         }
 
         await using WebApplication app = await CreateAppAsync();
-        using HttpClient client = app.GetTestClient();
+        using HttpClient client = LifecycleApplicationFactory.CreateExecutionClient(app);
         using HttpResponseMessage response = await PostAsync(client, assignment, "InvalidPayload", "Permanent client failure.");
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
@@ -248,7 +253,7 @@ public sealed class FailExecutionTests(SqlServerFixture fixture) : SqlServerTest
         builder.Services.AddSingleton(new JobRetryPolicy(Options.Create(new WorkerOptions { RetryDelaySeconds = 1, MaxRetryDelaySeconds = 3 })));
         builder.Services.AddTaskForgeExecutionReporting();
         WebApplication app = builder.Build();
-        app.MapTaskForgeExecutionEndpoints();
+        LifecycleApplicationFactory.ProtectRoutes(app).MapTaskForgeExecutionEndpoints();
         await app.StartAsync();
         return app;
     }

@@ -8,10 +8,15 @@ namespace TaskForge.Infrastructure.Persistence;
 
 public sealed class EfCoreJobStatisticsReader(TaskForgeDbContext dbContext) : IJobStatisticsReader
 {
-    public async Task<JobStatistics> GetAsync(CancellationToken cancellationToken = default)
+    public async Task<JobStatistics> GetAsync(CancellationToken cancellationToken = default, string? applicationId = null)
     {
-        Dictionary<JobStatus, long> counts = await dbContext.Jobs
-            .AsNoTracking()
+        IQueryable<Job> jobs = dbContext.Jobs.AsNoTracking();
+        if (applicationId is not null)
+        {
+            jobs = jobs.Where(job => job.ApplicationId == applicationId);
+        }
+
+        Dictionary<JobStatus, long> counts = await jobs
             .GroupBy(job => job.Status)
             .Select(group => new { Status = group.Key, Count = group.LongCount() })
             .ToDictionaryAsync(group => group.Status, group => group.Count, cancellationToken);

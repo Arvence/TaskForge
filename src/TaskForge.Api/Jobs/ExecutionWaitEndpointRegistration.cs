@@ -23,6 +23,11 @@ public static class ExecutionWaitEndpointRegistration
     private static async Task<IResult> WaitAsync(WaitForExecutionRequest request, JobDistributionService service, HttpContext context, CancellationToken cancellationToken)
     {
         context.Response.Headers.CacheControl = "no-store";
+        if (JobAccess.ClaimsOtherApplication(context, request.ApplicationId))
+        {
+            return JobAccess.Forbidden();
+        }
+
         try
         {
             JobExecutionAssignment? assignment = await service.WaitAsync(request.ApplicationId, request.WorkerId, request.SupportedTypes, request.WaitSeconds, cancellationToken);

@@ -29,7 +29,9 @@ public sealed class ExecutionLifecycleTests(SqlServerFixture fixture) : SqlServe
         AssertHistory(running, assignment, "Running");
         string before = await SnapshotAsync();
 
+        LifecycleApplicationFactory.SetApplication(client, "other-app");
         using HttpResponseMessage wrongApplication = await ReportAsync(client, assignment, operation, "other-app");
+        LifecycleApplicationFactory.SetApplication(client);
         await AssertProblemAsync(wrongApplication, HttpStatusCode.NotFound);
         Assert.Equal(before, await SnapshotAsync());
 
@@ -201,7 +203,7 @@ public sealed class ExecutionLifecycleTests(SqlServerFixture fixture) : SqlServe
         Assert.Empty(await context.JobAttempts.ToArrayAsync());
     }
 
-    private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateFactory() => new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
         builder.UseSetting("Worker:RetryDelaySeconds", "1");

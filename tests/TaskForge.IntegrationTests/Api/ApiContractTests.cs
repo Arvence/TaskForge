@@ -423,6 +423,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
         JsonElement problem = await missing.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(problem.GetProperty("errors").TryGetProperty("ApplicationId", out _));
+        LifecycleApplicationFactory.SetApplication(client, "a-project");
         using HttpResponseMessage accepted = await client.PostAsJsonAsync("/api/jobs", new { applicationId = " A-Project ", type = "http-request", payload });
         Assert.Equal(HttpStatusCode.Created, accepted.StatusCode);
         JsonElement job = await accepted.Content.ReadFromJsonAsync<JsonElement>();
@@ -440,6 +441,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         await using WebApplicationFactory<Program> factory = CreateFactory();
         using HttpClient client = factory.CreateClient();
         string maximum = new('A', 100);
+        LifecycleApplicationFactory.SetApplication(client, maximum);
         using HttpResponseMessage accepted = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: $" {maximum} "));
         using HttpResponseMessage rejected = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: maximum + "a"));
 
@@ -457,8 +459,11 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         await using WebApplicationFactory<Program> factory = CreateFactory();
         using HttpClient client = factory.CreateClient();
         client.DefaultRequestHeaders.Add("Idempotency-Key", "shared-key");
+        LifecycleApplicationFactory.SetApplication(client, "a-project");
         using HttpResponseMessage first = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: " A-Project "));
+        LifecycleApplicationFactory.SetApplication(client, "b-project");
         using HttpResponseMessage second = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: "b-project"));
+        LifecycleApplicationFactory.SetApplication(client, "a-project");
         using HttpResponseMessage duplicate = await client.PostAsJsonAsync("/api/jobs", ValidJob(applicationId: "A-PROJECT"));
         using HttpResponseMessage conflict = await client.PostAsJsonAsync("/api/jobs", ValidJob("Low", "a-project"));
 
@@ -476,8 +481,8 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         JsonElement page = await filtered.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, page.GetProperty("totalCount").GetInt32());
         Assert.Equal(firstId, Assert.Single(page.GetProperty("items").EnumerateArray()).GetProperty("id").GetGuid());
-        using HttpResponseMessage all = await client.GetAsync("/api/jobs");
-        Assert.Equal(2, (await all.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("totalCount").GetInt32());
+        using HttpResponseMessage unfiltered = await client.GetAsync("/api/jobs");
+        Assert.Equal(firstId, Assert.Single((await unfiltered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items").EnumerateArray()).GetProperty("id").GetGuid());
         using HttpResponseMessage invalidFilter = await client.GetAsync("/api/jobs?applicationId=a%2Fb");
         Assert.Equal(HttpStatusCode.BadRequest, invalidFilter.StatusCode);
     }
@@ -513,10 +518,10 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
 
     private sealed class ThrowingStatisticsReader : IJobStatisticsReader
     {
-        public Task<JobStatistics> GetAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException("Internal failure details");
+        public Task<JobStatistics> GetAsync(CancellationToken cancellationToken = default, string? applicationId = null) => throw new InvalidOperationException("Internal failure details");
     }
 
-    private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateFactory() => new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
     });

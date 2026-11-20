@@ -228,7 +228,7 @@ public sealed class SqlServerDeadlineMaintenanceTests(SqlServerFixture fixture) 
     {
         JobExecutionAssignment assignment = await SeedAsync();
         FailAttemptWrite failure = new();
-        await using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        await using WebApplicationFactory<Program> factory = new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
         {
             builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
             builder.UseSetting("Worker:PollIntervalMilliseconds", "50");

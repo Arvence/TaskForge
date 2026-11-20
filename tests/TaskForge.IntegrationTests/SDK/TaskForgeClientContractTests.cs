@@ -69,6 +69,7 @@ public sealed class TaskForgeClientContractTests(SqlServerFixture fixture) : Sql
         Assert.Equal(assignment.DeadlineAtUtc, before[0].DeadlineAtUtc);
         Assert.NotNull(before[0].DurationMilliseconds);
 
+        LifecycleApplicationFactory.SetApplication(http, "a-project");
         JsonElement rawJob = await http.GetFromJsonAsync<JsonElement>($"/api/jobs/{a.Id}");
         Assert.Equal("Completed", rawJob.GetProperty("status").GetString());
         Assert.Equal("Critical", rawJob.GetProperty("priority").GetString());
@@ -128,6 +129,7 @@ public sealed class TaskForgeClientContractTests(SqlServerFixture fixture) : Sql
         ExecutionAssignmentResponse old = Assert.IsType<ExecutionAssignmentResponse>(await client.WaitAsync(new("old-worker", [job.Type], 0)));
         ExecutionAssignmentResponse current = Assert.IsType<ExecutionAssignmentResponse>(await client.WaitAsync(new("new-worker", [job.Type], 10)));
         Assert.Equal(2, current.AttemptNumber);
+        LifecycleApplicationFactory.SetApplication(http, "sdk-project");
         string before = await http.GetStringAsync($"/api/jobs/{job.Id}");
         string history = await http.GetStringAsync($"/api/jobs/{job.Id}/attempts");
 
@@ -182,7 +184,7 @@ public sealed class TaskForgeClientContractTests(SqlServerFixture fixture) : Sql
         Assert.Null(await client.WaitAsync(new("worker", [submission.Type], 0)));
     }
 
-    private WebApplicationFactory<Program> CreateFactory() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+    private WebApplicationFactory<Program> CreateFactory() => new LifecycleApplicationFactory().WithWebHostBuilder(builder =>
     {
         builder.UseSetting("ConnectionStrings:TaskForge", ConnectionString);
         builder.UseSetting("Worker:RetryDelaySeconds", "1");
@@ -191,5 +193,5 @@ public sealed class TaskForgeClientContractTests(SqlServerFixture fixture) : Sql
         builder.UseSetting("Worker:PollIntervalMilliseconds", "50");
     });
 
-    private static TaskForgeClient Client(HttpClient http, string applicationId = "sdk-project") => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId });
+    private static TaskForgeClient Client(HttpClient http, string applicationId = "sdk-project") => new(http, new() { BaseUrl = http.BaseAddress!, ApplicationId = applicationId, ApiKey = LifecycleApplicationFactory.KeyFor(applicationId) });
 }
