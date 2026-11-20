@@ -1,5 +1,5 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 using TaskForge.Application.Jobs.Validation;
 using TaskForge.Domain.Jobs;
@@ -9,24 +9,28 @@ namespace TaskForge.Api.Jobs;
 internal sealed class JobPayloadPolicy : IJobPayloadPolicy
 {
     private const int MaxPayloadBytes = 16 * 1024;
-    private readonly Dictionary<string, Dictionary<string, Action<JsonElement>>> _applications = new(StringComparer.Ordinal);
+    private static readonly JsonSerializerOptions ContractJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        AllowDuplicateProperties = false,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
+    private readonly Dictionary<string, Dictionary<string, FieldRule>> _applications = new(StringComparer.Ordinal);
 
     public JobPayloadPolicy(IConfiguration configuration)
     {
         foreach (IConfigurationSection application in configuration.GetSection("JobAccess:Applications").GetChildren())
         {
-            Dictionary<string, Action<JsonElement>> jobs = new(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, FieldRule> jobs = new(StringComparer.OrdinalIgnoreCase);
             foreach (IConfigurationSection job in application.GetSection("Jobs").GetChildren())
             {
-                Action<JsonElement> validate = job["Contract"] switch
+                string jobType = job.Key.Trim();
+                if (jobType.Length is 0 or > 100 || jobs.ContainsKey(jobType))
                 {
-                    "generate-report" => ValidateReport,
-                    "calculation" => ValidateCalculation,
-                    "http-get" => BindTarget(job, application.Key, ValidateHttpGet, originOnly: true),
-                    "wowiki-report" => BindTarget(job, application.Key, ValidateWoWikiReport),
-                    _ => throw new InvalidOperationException($"Unsupported payload contract for '{application.Key}/{job.Key}'.")
-                };
-                jobs.Add(job.Key.Trim(), validate);
+                    throw new InvalidOperationException($"Invalid or duplicate job type for application '{application.Key}'.");
+                }
+
+                jobs.Add(jobType, ReadContract(job));
             }
 
             _applications.Add(JobApplicationId.Normalize(application.Key), jobs);
@@ -35,7 +39,7 @@ internal sealed class JobPayloadPolicy : IJobPayloadPolicy
 
     public string? Validate(string applicationId, string jobType, JsonElement payload, int payloadBytes)
     {
-        if (!_applications.TryGetValue(applicationId, out var jobs) || !jobs.TryGetValue(jobType, out var validate))
+        if (!_applications.TryGetValue(applicationId, out var jobs) || !jobs.TryGetValue(jobType, out FieldRule? contract))
         {
             return "No payload contract is configured for this application and job type.";
         }
@@ -45,159 +49,187 @@ internal sealed class JobPayloadPolicy : IJobPayloadPolicy
             return $"Payload must not exceed {MaxPayloadBytes} UTF-8 bytes.";
         }
 
+        return ValidateValue(contract, payload, "payload");
+    }
+
+    private static FieldRule ReadContract(IConfigurationSection job)
+    {
+        if (job["Contract"] is not { } json || job.GetChildren().Any(setting => !setting.Key.Equals("Contract", StringComparison.OrdinalIgnoreCase))
+            || job.GetSection("Contract").GetChildren().Any())
+        {
+            throw new InvalidOperationException($"Configure a JSON payload contract as the only job setting for '{job.Path}'.");
+        }
+
+        ObjectContract? declaration;
         try
         {
-            validate(payload);
-            return null;
+            declaration = JsonSerializer.Deserialize<ObjectContract>(json, ContractJson);
         }
-        catch (PayloadException exception)
+        catch (JsonException)
         {
-            return exception.Message;
+            throw new InvalidOperationException($"Invalid JSON payload contract for '{job.Path}'. Replace legacy profile names with a JSON object.");
         }
+
+        FieldRule root = new() { Type = "object", Properties = declaration?.Properties };
+        if (ValidateRule(root, "properties") is { } error)
+        {
+            throw new InvalidOperationException($"Invalid payload contract for '{job.Path}'. {error}");
+        }
+
+        return root;
     }
 
-    private static Action<JsonElement> BindTarget(IConfigurationSection job, string applicationId, Action<JsonElement, Uri> validate, bool originOnly = false)
+    private static string? ValidateRule(FieldRule rule, string path)
     {
-        if (!TryHttpUrl(job["Target"], out Uri? target) || (originOnly && target.AbsolutePath != "/"))
+        if (rule.Type is not ("string" or "number" or "boolean" or "object" or "array" or "null"))
         {
-            throw new InvalidOperationException($"Configure a valid HTTP target for '{applicationId}/{job.Key}'.");
+            return $"{path} must declare a supported type.";
         }
 
-        return payload => validate(payload, target);
-    }
-
-    private static void ValidateCalculation(JsonElement payload)
-    {
-        RequireObject(payload, "payload", "values");
-        foreach (JsonElement value in RequireArray(payload, "values", "payload.values", 1000))
+        if ((rule.Properties is not null) != (rule.Type == "object") ||
+            (rule.Items is not null) != (rule.Type == "array") ||
+            (rule.Type != "string" && (rule.MinLength is not null || rule.MaxLength is not null || rule.NonBlank || rule.AllowedValues is not null)) ||
+            (rule.Type != "number" && (rule.Minimum is not null || rule.Maximum is not null || rule.MaxDecimalPlaces is not null)) ||
+            (rule.Type != "array" && (rule.MinItems is not null || rule.MaxItems is not null)))
         {
-            if (value.ValueKind != JsonValueKind.Number || !value.TryGetDecimal(out _))
+            return $"{path} must declare only settings supported by its type, including properties for objects and items for arrays.";
+        }
+
+        if (rule.MinLength < 0 || rule.MaxLength < 0 || rule.MinLength > rule.MaxLength ||
+            rule.MinItems < 0 || rule.MaxItems < 0 || rule.MinItems > rule.MaxItems ||
+            rule.Minimum > rule.Maximum || rule.MaxDecimalPlaces is < 0 or > 28 ||
+            rule.AllowedValues is { Length: 0 } || rule.AllowedValues?.Any(value => value is null || !StringMatches(rule, value)) == true)
+        {
+            return $"{path} has invalid bounds or allowed values.";
+        }
+
+        if (rule.Properties is { } properties)
+        {
+            foreach ((string name, FieldRule? child) in properties)
             {
-                throw new PayloadException("payload.values[] must be a decimal number.");
+                if (child is null)
+                {
+                    return $"{path}.{name} must declare a field rule.";
+                }
+
+                if (ValidateRule(child, $"{path}.{name}") is { } error)
+                {
+                    return error;
+                }
             }
         }
+
+        if (rule.Items is { } items)
+        {
+            return items.Required ? $"{path}.items cannot specify required." : ValidateRule(items, $"{path}.items");
+        }
+
+        return null;
     }
 
-    private static void ValidateReport(JsonElement payload)
+    private static string? ValidateValue(FieldRule rule, JsonElement value, string path) => rule.Type switch
     {
-        RequireObject(payload, "payload", "title", "entries");
-        RequireText(payload, "title", "payload.title", 120);
-        foreach (JsonElement entry in RequireArray(payload, "entries", "payload.entries", 1000))
-        {
-            RequireObject(entry, "payload.entries[]", "category", "amount");
-            RequireText(entry, "category", "payload.entries[].category", 80);
-            if (!entry.TryGetProperty("amount", out JsonElement amount) || amount.ValueKind != JsonValueKind.Number || !amount.TryGetDecimal(out decimal number)
-                || number is < 0 or > 1_000_000_000_000m || decimal.Round(number, 2) != number)
-            {
-                throw new PayloadException("payload.entries[].amount must be between 0 and 1000000000000 with at most two decimal places.");
-            }
-        }
-    }
+        "object" when value.ValueKind == JsonValueKind.Object => ValidateObject(rule.Properties!, value, path),
+        "array" when value.ValueKind == JsonValueKind.Array => ValidateArray(rule, value, path),
+        "string" when value.ValueKind == JsonValueKind.String => ValidateString(rule, value.GetString()!, path),
+        "number" when value.ValueKind == JsonValueKind.Number => ValidateNumber(rule, value, path),
+        "boolean" when value.ValueKind is JsonValueKind.True or JsonValueKind.False => null,
+        "null" when value.ValueKind == JsonValueKind.Null => null,
+        _ => $"{path} must be of type {rule.Type}."
+    };
 
-    private static void ValidateHttpGet(JsonElement payload, Uri target)
+    private static string? ValidateObject(Dictionary<string, FieldRule?> properties, JsonElement value, string path)
     {
-        RequireObject(payload, "payload", "url", "method", "body", "headers");
-        string url = RequireText(payload, "url", "payload.url", 2048);
-        if (!TryHttpUrl(url, out Uri? requested) || requested.GetLeftPart(UriPartial.Authority) != target.GetLeftPart(UriPartial.Authority))
-        {
-            throw new PayloadException("payload.url must use the configured HTTP origin and contain no credentials, query, or fragment.");
-        }
-
-        if (RequireText(payload, "method", "payload.method", 4) != "GET")
-        {
-            throw new PayloadException("payload.method must be GET.");
-        }
-
-        foreach (string property in new[] { "body", "headers" })
-        {
-            if (payload.TryGetProperty(property, out JsonElement value) && value.ValueKind != JsonValueKind.Null)
-            {
-                throw new PayloadException($"payload.{property} must be omitted or null for this job type.");
-            }
-        }
-    }
-
-    private static void ValidateWoWikiReport(JsonElement payload, Uri target)
-    {
-        RequireObject(payload, "payload", "url", "method", "body", "headers");
-        if (!payload.TryGetProperty("body", out JsonElement body) || !payload.TryGetProperty("headers", out JsonElement headers))
-        {
-            throw new PayloadException("payload.body and payload.headers are required.");
-        }
-
-        RequireObject(body, "payload.body", "reportId", "externalReference");
-        RequireObject(headers, "payload.headers", "X-TaskForge-Source");
-        string id = RequireText(body, "reportId", "payload.body.reportId", 20);
-        if (id[0] == '0' || !id.All(char.IsAsciiDigit))
-        {
-            throw new PayloadException("payload.body.reportId must be a positive numeric identifier.");
-        }
-
-        if (RequireText(body, "externalReference", "payload.body.externalReference", 24) != $"WOW-{id}")
-        {
-            throw new PayloadException("payload.body.externalReference must match the report ID.");
-        }
-
-        string expectedUrl = $"{target.AbsoluteUri.TrimEnd('/')}/api/internal/taskforge/user-reports/{id}/ready";
-        if (RequireText(payload, "url", "payload.url", 2048) != expectedUrl)
-        {
-            throw new PayloadException("payload.url must match the configured private callback for the report.");
-        }
-
-        if (RequireText(payload, "method", "payload.method", 4) != "POST" ||
-            RequireText(headers, "X-TaskForge-Source", "payload.headers.X-TaskForge-Source", 32) != "wowiki-user-reports")
-        {
-            throw new PayloadException("The WoWiki callback requires POST and the configured source marker.");
-        }
-    }
-
-    private static void RequireObject(JsonElement value, string path, params string[] allowed)
-    {
-        if (value.ValueKind != JsonValueKind.Object)
-        {
-            throw new PayloadException($"{path} must be a JSON object.");
-        }
-
         HashSet<string> seen = new(StringComparer.Ordinal);
         foreach (JsonProperty property in value.EnumerateObject())
         {
-            if (!allowed.Contains(property.Name, StringComparer.Ordinal))
+            if (!properties.TryGetValue(property.Name, out FieldRule? rule))
             {
-                throw new PayloadException($"{path} contains a field that is not allowed. Allowed fields: {string.Join(", ", allowed)}.");
+                return $"{path} contains a field that is not allowed.";
             }
 
             if (!seen.Add(property.Name))
             {
-                throw new PayloadException($"{path} contains duplicate fields.");
+                return $"{path}.{property.Name} appears more than once.";
+            }
+
+            if (ValidateValue(rule!, property.Value, $"{path}.{property.Name}") is { } error)
+            {
+                return error;
             }
         }
-    }
 
-    private static string RequireText(JsonElement value, string name, string path, int maxLength)
-    {
-        if (!value.TryGetProperty(name, out JsonElement property) || property.ValueKind != JsonValueKind.String ||
-            property.GetString() is not { } text || string.IsNullOrWhiteSpace(text) || text.Length > maxLength)
+        foreach ((string name, FieldRule? rule) in properties)
         {
-            throw new PayloadException($"{path} must be a nonblank string of at most {maxLength} characters.");
+            if (rule!.Required && !seen.Contains(name))
+            {
+                return $"{path}.{name} is required.";
+            }
         }
 
-        return text;
+        return null;
     }
 
-    private static JsonElement.ArrayEnumerator RequireArray(JsonElement value, string name, string path, int maxLength)
+    private static string? ValidateArray(FieldRule rule, JsonElement value, string path)
     {
-        if (!value.TryGetProperty(name, out JsonElement property) || property.ValueKind != JsonValueKind.Array ||
-            property.GetArrayLength() == 0 || property.GetArrayLength() > maxLength)
+        int count = value.GetArrayLength();
+        if (count < rule.MinItems || count > rule.MaxItems)
         {
-            throw new PayloadException($"{path} must be an array of 1 to {maxLength} items.");
+            return $"{path} has an invalid number of items.";
         }
 
-        return property.EnumerateArray();
+        int index = 0;
+        foreach (JsonElement item in value.EnumerateArray())
+        {
+            if (ValidateValue(rule.Items!, item, $"{path}[{index++}]") is { } error)
+            {
+                return error;
+            }
+        }
+
+        return null;
     }
 
-    private static bool TryHttpUrl(string? value, [NotNullWhen(true)] out Uri? uri) =>
-        Uri.TryCreate(value, UriKind.Absolute, out uri) && uri.Scheme is "http" or "https"
-        && uri.UserInfo.Length == 0 && uri.Query.Length == 0 && uri.Fragment.Length == 0;
+    private static bool StringMatches(FieldRule rule, string text) =>
+        (!rule.NonBlank || !string.IsNullOrWhiteSpace(text)) && !(text.Length < rule.MinLength || text.Length > rule.MaxLength);
 
-    private sealed class PayloadException(string message) : Exception(message);
+    private static string? ValidateString(FieldRule rule, string text, string path)
+    {
+        if (!StringMatches(rule, text) || rule.AllowedValues?.Contains(text, StringComparer.Ordinal) == false)
+        {
+            return $"{path} does not satisfy the configured string constraints.";
+        }
+
+        return null;
+    }
+
+    private static string? ValidateNumber(FieldRule rule, JsonElement value, string path)
+    {
+        if (!value.TryGetDecimal(out decimal number) || number < rule.Minimum || number > rule.Maximum ||
+            (rule.MaxDecimalPlaces is { } places && decimal.Round(number, places) != number))
+        {
+            return $"{path} does not satisfy the configured decimal constraints.";
+        }
+
+        return null;
+    }
+
+    private sealed record ObjectContract(Dictionary<string, FieldRule?>? Properties);
+
+    private sealed record FieldRule
+    {
+        public string? Type { get; init; }
+        public bool Required { get; init; }
+        public Dictionary<string, FieldRule?>? Properties { get; init; }
+        public FieldRule? Items { get; init; }
+        public int? MinLength { get; init; }
+        public int? MaxLength { get; init; }
+        public bool NonBlank { get; init; }
+        public string[]? AllowedValues { get; init; }
+        public decimal? Minimum { get; init; }
+        public decimal? Maximum { get; init; }
+        public int? MaxDecimalPlaces { get; init; }
+        public int? MinItems { get; init; }
+        public int? MaxItems { get; init; }
+    }
 }

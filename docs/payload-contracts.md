@@ -1,51 +1,82 @@
 # Application access and payload contracts
 
-TaskForge stores a job's validated inputs for later execution. Keep full application records in their source system. Submit a record reference, a versioned reference when a particular revision matters, or the small input values the handler needs. Job payloads, results, errors, and idempotency keys must not contain secrets.
+TaskForge stores validated inputs for later execution. Keep full application
+records in their source system. Pass a reference or the small input values the
+worker needs. Keep secrets out of payloads, results, errors, and idempotency keys.
 
 ## Configure an application
 
-The server operator sets the API key and the available job contracts in server configuration. An application can use only the job types the operator assigns to it. There is no registration endpoint and no unrestricted fallback.
+Copy the [sample configuration](../.taskforge-apps.env.example) to
+`.taskforge-apps.env` beside `compose.yaml`. It registers the sample worker's
+`generate-report` and `http-request` job types. Replace the placeholder with a
+unique random API key. Keys must use 32–128 ASCII letters, digits, hyphens, or
+underscores. For a standalone API, supply the same settings through its
+environment or deployment configuration. Restart the API after changing them.
 
-For local Docker Compose, create `.taskforge-apps.env` beside `compose.yaml`. The file is ignored by Git. For a standalone API, set the same keys through its environment or deployment secret provider. Restart the API after changing the configuration.
+The operator controls which contracts are available to each application.
+Clients send `Authorization: Bearer <APPLICATION_API_KEY>` for submission,
+acquisition, outcome reporting, inspection, management, and statistics. The .NET
+SDK accepts `TaskForgeClientOptions.ApiKey`. The sample CLI and debugging console
+read `TaskForge__ApiKey`. Use HTTPS when crossing hosts. The default Compose port
+binds to host loopback.
 
-```dotenv
-JobAccess__Applications__a-project__ApiKey=<SAMPLE_APPLICATION_API_KEY>
-JobAccess__Applications__a-project__Jobs__generate-report__Contract=generate-report
-JobAccess__Applications__a-project__Jobs__http-request__Contract=http-get
-JobAccess__Applications__a-project__Jobs__http-request__Target=http://localhost:8275
-```
+An invalid or missing key returns `401`. Claiming another valid application ID
+returns `403`. Looking up or managing another application's job by ID returns
+`404`. Lists and statistics are scoped to the authenticated application. Health,
+readiness, and OpenAPI are public.
 
-Replace the placeholder with a unique, randomly generated secret. Keys must be 32–128 characters using ASCII letters, digits, hyphens, or underscores. For example, generate 32 random bytes and encode them as hex. Keep keys outside source control and use HTTPS when crossing hosts. The default Compose port binds to host loopback.
+## Declare a payload contract
 
-Send `Authorization: Bearer <APPLICATION_API_KEY>` for job submission, acquisition, outcome reporting, job inspection and management, and statistics. The same key can be used by the submitter and worker for that application. The .NET SDK accepts `TaskForgeClientOptions.ApiKey`, and the sample CLI and debugging console read `TaskForge__ApiKey`. Health, readiness, and OpenAPI remain accessible without a key.
-
-An invalid or missing key returns `401`. A request claiming another valid application ID returns `403`. Job lookup or management by ID returns `404` for another application's jobs. Lists and statistics are scoped to the authenticated application. A valid application ID alone never grants access.
-
-## Supported profiles
-
-Register a job type under `JobAccess:Applications:<applicationId>:Jobs:<type>:Contract`. The registered job type may differ from the profile name. Profile names and JSON fields are case-sensitive. The job type used for registration lookup is case-insensitive.
-
-| Profile | Required payload fields | Optional fields and limits |
-| --- | --- | --- |
-| `generate-report` | `title` and `entries`. Each entry has `category` and decimal `amount`. | Title up to 120 characters, 1–1,000 entries, category up to 80 characters, amount from 0 to 1 trillion with at most two decimal places. |
-| `calculation` | `values`, an array of 1–1,000 decimal numbers. | No optional fields. The application supplies the matching calculation handler. |
-| `http-get` | `url` and `method: "GET"`. | `body` and `headers` may be omitted or null. The URL must match the configured `Target` origin and cannot contain credentials, a query, or a fragment. |
-| `wowiki-report` | `url`, `method: "POST"`, `body.reportId`, `body.externalReference`, and `headers.X-TaskForge-Source`. | No optional fields. The current WoWiki receiver requires the external reference, so TaskForge requires it too. |
-
-For the WoWiki `http-request` job, set the profile to `wowiki-report` and `Target` to the private WoWiki base URL the worker can reach. The URL must be that base followed by `/api/internal/taskforge/user-reports/{reportId}/ready`. A report ID is a positive numeric string, its reference must be `WOW-{reportId}`, and the source marker must be `wowiki-user-reports`. Report content and credentials stay out of the payload. The source marker is not a credential. The worker's own HTTP host allowlist still applies. The WoWiki backend must supply its application ID and matching bearer key on submission.
+Set `JobAccess:Applications:<applicationId>:Jobs:<type>:Contract` to a JSON
+string with a `properties` object. In the Compose environment file, use one
+single-quoted JSON value per line:
 
 ```dotenv
-JobAccess__Applications__wowiki__ApiKey=<WOWIKI_APPLICATION_API_KEY>
-JobAccess__Applications__wowiki__Jobs__http-request__Contract=wowiki-report
-JobAccess__Applications__wowiki__Jobs__http-request__Target=<PRIVATE_WOWIKI_BASE_URL>
+JobAccess__Applications__example-app__ApiKey=<APPLICATION_API_KEY>
+JobAccess__Applications__example-app__Jobs__refresh-record__Contract='{"properties":{"referenceId":{"type":"string","required":true,"nonBlank":true,"maxLength":128}}}'
+JobAccess__Applications__example-app__Jobs__calculate__Contract='{"properties":{"values":{"type":"array","required":true,"minItems":1,"maxItems":1000,"items":{"type":"number"}}}}'
 ```
 
-Add a new payload shape through a reviewed validator in the server's [payload policy](../src/TaskForge.Api/Jobs/JobPayloadPolicy.cs) and register its profile for the applications that need it. Application clients and SDK handler registration cannot change the server policy.
+The first accepts a payload such as `{"referenceId":"record-123"}`. The contract
+defines the reference's type, length, and requiredness. The worker interprets it
+and decides how to look up the record. The second accepts small inline inputs,
+such as `{"values":[12,30]}`. Each job type has its own contract.
 
-## Validation and existing jobs
+| Field type | Settings |
+| --- | --- |
+| `string` | Optional `minLength` and `maxLength` in UTF-16 code units, `nonBlank`, and exact `allowedValues`. |
+| `number` | Decimal number with optional inclusive `minimum` and `maximum` and `maxDecimalPlaces`. |
+| `boolean` | JSON `true` or `false`. |
+| `object` | A `properties` object containing named field declarations. |
+| `array` | An `items` rule and optional inclusive `minItems` and `maxItems`. |
+| `null` | Explicit JSON `null`, useful for fields a serializer emits with no value. |
 
-The API limits payloads to 16 KiB in UTF-8 and limits the submit request body to 32 KiB when served by Kestrel. An unregistered application/job pair, missing field, unknown or duplicate field, invalid type, or invalid value returns a validation error before any job write. The validator checks nested objects and arrays. It preserves the original payload text for existing idempotency comparisons.
+Set `required` on named fields that must be present. The default is optional.
+Object field names are case-sensitive and must be declared. Duplicate fields
+are rejected even inside array items. Job type lookup is case-insensitive.
+An empty `properties` object allows only an empty JSON object. Invalid
+declarations stop API startup.
 
-Previously stored jobs continue through the existing acquisition, retry, and outcome paths. This change does not rewrite historical data. Manual replay creates a new job, so it validates the payload against the current contract and rejects a legacy shape that no longer passes. Coordinate contract and key configuration before upgrading clients.
+## Validation and upgrades
 
-The allowlist controls the structure and bounds of job inputs. It cannot tell whether a permitted title contains personal data. Senders and workers still need to keep sensitive data out of inputs, results, and error messages. Existing job retention is unchanged. Set retention and deletion requirements for your deployment before processing data that needs a defined lifetime.
+The payload limit is 16 KiB in UTF-8 and the Kestrel submission-body limit is
+32 KiB. An unregistered application/job pair or invalid payload returns a
+`400` with a `Payload` validation error before any job write.
+
+When upgrading from named profiles, replace each profile value with a JSON
+declaration and remove its server-side `Target` setting. For the sample HTTP
+worker, set `HttpRequestJobs__AllowedOrigin` to the former GET target's origin.
+For application-owned HTTP callbacks, deploy worker checks for the destination,
+path, and business identifiers before replacing the old API profile. A worker
+can construct a callback from a submitted reference and trusted configuration.
+
+The server validates structure before persistence. A well-formed URL outside
+the worker's allowed origin can pass a string declaration, but the sample worker
+rejects it permanently before sending. For a fixed URL, a contract can use
+`allowedValues` to reject other destinations during submission as well.
+
+Existing jobs keep their original payloads, attempts, and automatic retry
+behavior. Manual replay and new submissions, including idempotent
+resubmissions, use the current declaration. A tighter contract can reject a
+previously accepted payload. TaskForge preserves the original payload text for
+idempotency comparisons.

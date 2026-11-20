@@ -18,8 +18,16 @@ namespace TaskForge.IntegrationTests.Api;
 [Collection("SQL Server")]
 public sealed class ControlledPayloadTests(SqlServerFixture fixture) : SqlServerTest(fixture)
 {
-    private const string ReportUrl = "https://wowiki.example/api/internal/taskforge/user-reports/42/ready";
-    private readonly string _wowWikiKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+    private const string ReferenceContract = """
+        {"properties":{
+            "referenceId":{"type":"string","required":true,"nonBlank":true,"maxLength":128},
+            "options":{"type":"object","properties":{"force":{"type":"boolean","required":true}}}
+        }}
+        """;
+    private const string CalculationContract = """
+        {"properties":{"values":{"type":"array","required":true,"minItems":1,"maxItems":1000,"items":{"type":"number"}}}}
+        """;
+    private readonly string _referenceKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     private readonly string _calculatorKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
     [Fact]
@@ -62,33 +70,25 @@ public sealed class ControlledPayloadTests(SqlServerFixture fixture) : SqlServer
     public async Task Only_registered_contracts_can_persist_payloads_and_nested_fields_are_checked()
     {
         await using WebApplicationFactory<Program> server = CreateServer();
-        using HttpClient wiki = CreateClient(server, _wowWikiKey);
+        using HttpClient reference = CreateClient(server, _referenceKey);
         using HttpClient calculator = CreateClient(server, _calculatorKey);
-        object[] rejected =
+        (HttpClient Client, string Application, string Type, object Payload)[] rejected =
         [
-            new { url = ReportUrl, method = "POST", body = new { reportId = "42" }, headers = SourceHeader() },
-            new { url = ReportUrl, method = "POST", body = new { reportId = "42", externalReference = "WOW-42", description = "extra" }, headers = SourceHeader() },
-            new { url = ReportUrl, method = "POST", body = new { reportId = "42", externalReference = "WOW-42" }, headers = new Dictionary<string, string>(SourceHeader()) { ["Authorization"] = "example-value" } },
-            new { url = "https://unexpected.example/api/internal/taskforge/user-reports/42/ready", method = "POST", body = new { reportId = "42", externalReference = "WOW-42" }, headers = SourceHeader() }
+            (reference, "reference-client", "refresh-record", new { options = new { force = false } }),
+            (reference, "reference-client", "refresh-record", new { referenceId = "record-42", options = new { force = false, extra = true } }),
+            (reference, "reference-client", "refresh-record", new { referenceId = "record-42", options = new { force = "false" } }),
+            (reference, "reference-client", "refresh-record", new { referenceId = new string('x', 17_000) }),
+            (reference, "reference-client", "unknown", ReferencePayload()),
+            (calculator, "calculator", "refresh-record", ReferencePayload()),
+            (calculator, "calculator", "calculate", new { values = new[] { "42" } })
         ];
 
-        foreach (object payload in rejected)
+        foreach ((HttpClient client, string applicationId, string type, object payload) in rejected)
         {
-            using HttpResponseMessage response = await wiki.PostAsJsonAsync("/api/jobs", new { applicationId = "wowiki", type = "http-request", payload });
+            using HttpResponseMessage response = await client.PostAsJsonAsync("/api/jobs", new { applicationId, type, payload });
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
             JsonElement problem = await response.Content.ReadFromJsonAsync<JsonElement>();
             Assert.True(problem.GetProperty("errors").TryGetProperty("Payload", out _));
-        }
-
-        foreach ((HttpClient client, object body) in new (HttpClient, object)[]
-        {
-            (wiki, new { applicationId = "wowiki", type = "unknown", payload = ReportPayload() }),
-            (calculator, new { applicationId = "calculator", type = "calculate", payload = new { values = new[] { "42" } } }),
-            (calculator, new { applicationId = "calculator", type = "calculate", payload = new { values = new[] { 42 }, note = new string('x', 17_000) } })
-        })
-        {
-            using HttpResponseMessage response = await client.PostAsJsonAsync("/api/jobs", body);
-            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         }
 
         await using (TaskForgeDbContext read = new(DatabaseOptions))
@@ -96,7 +96,7 @@ public sealed class ControlledPayloadTests(SqlServerFixture fixture) : SqlServer
             Assert.Empty(await read.Jobs.ToListAsync());
         }
 
-        using HttpResponseMessage valid = await wiki.PostAsJsonAsync("/api/jobs", new { applicationId = "wowiki", type = "http-request", payload = ReportPayload() });
+        using HttpResponseMessage valid = await reference.PostAsJsonAsync("/api/jobs", new { applicationId = "reference-client", type = "refresh-record", payload = ReferencePayload() });
         Assert.Equal(HttpStatusCode.Created, valid.StatusCode);
         using HttpResponseMessage calculation = await calculator.PostAsJsonAsync("/api/jobs", new { applicationId = "calculator", type = "calculate", payload = new { values = new[] { 12, 30 } } });
         Assert.Equal(HttpStatusCode.Created, calculation.StatusCode);
@@ -107,20 +107,23 @@ public sealed class ControlledPayloadTests(SqlServerFixture fixture) : SqlServer
     {
         await using WebApplicationFactory<Program> server = CreateServer();
         using HttpClient sdkHttp = server.CreateClient();
-        using HttpClient wiki = CreateClient(server, _wowWikiKey);
+        using HttpClient reference = CreateClient(server, _referenceKey);
         using HttpClient other = CreateClient(server, _calculatorKey);
-        TaskForgeClient sdk = new(sdkHttp, new() { ApplicationId = "wowiki", BaseUrl = sdkHttp.BaseAddress!, ApiKey = _wowWikiKey });
-        SubmitJobRequest request = new("http-request", JsonSerializer.SerializeToElement(ReportPayload()));
-        JobResponse job = await sdk.SubmitAsync(request, "wowiki-report-42");
-        Assert.Equal(job.Id, (await sdk.SubmitAsync(request, "wowiki-report-42")).Id);
+        TaskForgeClient sdk = new(sdkHttp, new() { ApplicationId = "reference-client", BaseUrl = sdkHttp.BaseAddress!, ApiKey = _referenceKey });
+        SubmitJobRequest request = new("refresh-record", JsonSerializer.SerializeToElement(ReferencePayload()));
+        JobResponse job = await sdk.SubmitAsync(request, "refresh-record-42");
+        Assert.Equal(job.Id, (await sdk.SubmitAsync(request, "refresh-record-42")).Id);
+        SubmitJobRequest differentInput = new("refresh-record", JsonSerializer.SerializeToElement(new { referenceId = "record-43" }));
+        TaskForgeApiException conflict = await Assert.ThrowsAsync<TaskForgeApiException>(() => sdk.SubmitAsync(differentInput, "refresh-record-42"));
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
 
-        using HttpResponseMessage wrongSubmission = await other.PostAsJsonAsync("/api/jobs", new { applicationId = "wowiki", type = "http-request", payload = ReportPayload() });
+        using HttpResponseMessage wrongSubmission = await other.PostAsJsonAsync("/api/jobs", new { applicationId = "reference-client", type = "refresh-record", payload = ReferencePayload() });
         Assert.Equal(HttpStatusCode.Forbidden, wrongSubmission.StatusCode);
-        using HttpResponseMessage wrongWait = await other.PostAsJsonAsync("/api/executions/wait", new { applicationId = "wowiki", workerId = "other", supportedTypes = new[] { "http-request" }, waitSeconds = 0 });
+        using HttpResponseMessage wrongWait = await other.PostAsJsonAsync("/api/executions/wait", new { applicationId = "reference-client", workerId = "other", supportedTypes = new[] { "refresh-record" }, waitSeconds = 0 });
         Assert.Equal(HttpStatusCode.Forbidden, wrongWait.StatusCode);
         Assert.Equal(0, (await other.GetFromJsonAsync<JsonElement>("/api/jobs")).GetProperty("totalCount").GetInt32());
         Assert.Equal(0, (await other.GetFromJsonAsync<JsonElement>("/api/stats")).GetProperty("totalJobs").GetInt64());
-        using HttpResponseMessage wrongFilter = await other.GetAsync("/api/jobs?applicationId=wowiki");
+        using HttpResponseMessage wrongFilter = await other.GetAsync("/api/jobs?applicationId=reference-client");
         Assert.Equal(HttpStatusCode.Forbidden, wrongFilter.StatusCode);
         foreach ((HttpMethod method, string path) in new (HttpMethod, string)[]
         {
@@ -132,15 +135,15 @@ public sealed class ControlledPayloadTests(SqlServerFixture fixture) : SqlServer
             Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         }
 
-        ExecutionAssignmentResponse assignment = Assert.IsType<ExecutionAssignmentResponse>(await sdk.WaitAsync(new("worker", ["http-request"], 0)));
+        ExecutionAssignmentResponse assignment = Assert.IsType<ExecutionAssignmentResponse>(await sdk.WaitAsync(new("worker", ["refresh-record"], 0)));
         Assert.Equal(job.Id, assignment.JobId);
-        Assert.Equal("42", assignment.Payload.GetProperty("body").GetProperty("reportId").GetString());
+        Assert.Equal(job.Payload.GetRawText(), assignment.Payload.GetRawText());
         string completePath = $"/api/jobs/{job.Id}/attempts/{assignment.AttemptId}/complete";
-        using HttpResponseMessage forged = await other.PostAsJsonAsync(completePath, new { applicationId = "wowiki", workerId = "worker", result = new { statusCode = 201 } });
+        using HttpResponseMessage forged = await other.PostAsJsonAsync(completePath, new { applicationId = "reference-client", workerId = "worker", result = new { statusCode = 201 } });
         Assert.Equal(HttpStatusCode.Forbidden, forged.StatusCode);
         using HttpResponseMessage unrelated = await other.PostAsJsonAsync(completePath, new { applicationId = "calculator", workerId = "worker", result = new { statusCode = 201 } });
         Assert.Equal(HttpStatusCode.NotFound, unrelated.StatusCode);
-        using HttpResponseMessage completed = await wiki.PostAsJsonAsync(completePath, new { applicationId = "wowiki", workerId = "worker", result = new { statusCode = 201 } });
+        using HttpResponseMessage completed = await reference.PostAsJsonAsync(completePath, new { applicationId = "reference-client", workerId = "worker", result = new { statusCode = 201 } });
         Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
         Assert.Equal(TaskForge.SDK.Jobs.JobStatus.Completed, (await sdk.GetJobAsync(job.Id)).Status);
         Assert.Single(await sdk.GetAttemptsAsync(job.Id));
@@ -181,11 +184,11 @@ public sealed class ControlledPayloadTests(SqlServerFixture fixture) : SqlServer
 
     private WebApplicationFactory<Program> CreateServer() => new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder
         .UseSetting("ConnectionStrings:TaskForge", ConnectionString)
-        .UseSetting("JobAccess:Applications:wowiki:ApiKey", _wowWikiKey)
-        .UseSetting("JobAccess:Applications:wowiki:Jobs:http-request:Contract", "wowiki-report")
-        .UseSetting("JobAccess:Applications:wowiki:Jobs:http-request:Target", "https://wowiki.example")
+        .UseSetting("JobAccess:Applications:reference-client:ApiKey", _referenceKey)
+        .UseSetting("JobAccess:Applications:reference-client:Jobs:refresh-record:Contract", ReferenceContract)
         .UseSetting("JobAccess:Applications:calculator:ApiKey", _calculatorKey)
-        .UseSetting("JobAccess:Applications:calculator:Jobs:calculate:Contract", "calculation"));
+        .UseSetting("JobAccess:Applications:calculator:Jobs:calculate:Contract", CalculationContract)
+        .UseSetting("JobAccess:Applications:calculator:Jobs:refresh-record:Contract", CalculationContract));
 
     private static HttpClient CreateClient(WebApplicationFactory<Program> server, string key)
     {
@@ -194,7 +197,5 @@ public sealed class ControlledPayloadTests(SqlServerFixture fixture) : SqlServer
         return http;
     }
 
-    private static object ReportPayload() => new { url = ReportUrl, method = "POST", body = new { reportId = "42", externalReference = "WOW-42" }, headers = SourceHeader() };
-
-    private static Dictionary<string, string> SourceHeader() => new() { ["X-TaskForge-Source"] = "wowiki-user-reports" };
+    private static object ReferencePayload() => new { referenceId = "record-42", options = new { force = false } };
 }
