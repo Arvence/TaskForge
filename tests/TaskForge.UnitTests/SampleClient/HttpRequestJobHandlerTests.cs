@@ -11,19 +11,18 @@ namespace TaskForge.UnitTests.SampleClient;
 public sealed class HttpRequestJobHandlerTests
 {
     [Fact]
-    public async Task Allowed_request_sends_json_and_headers_and_returns_compact_metadata()
+    public async Task Allowed_get_sends_no_body_or_headers_and_returns_compact_metadata()
     {
         using StubHttpHandler transport = new(HttpStatusCode.Created);
         using HttpClient http = new(transport);
-        HttpRequestPayload payload = new("https://api.example.test/tasks", "POST", JsonSerializer.SerializeToElement(new { taskId = 42 }), new Dictionary<string, string?> { ["X-Source"] = "SampleClient" });
-        JsonElement result = (await Handler(http).HandleAsync(payload))!.Value;
+        using JsonDocument payload = JsonDocument.Parse("""{"url":"https://api.example.test/tasks","method":"GET","body":null,"headers":null}""");
+        JsonElement result = (await ((IJobHandler<JsonElement>)Handler(http)).HandleAsync(payload.RootElement))!.Value;
         Assert.Equal(201, result.GetProperty("statusCode").GetInt32());
         Assert.Equal("Created", result.GetProperty("reasonPhrase").GetString());
-        Assert.Equal(HttpMethod.Post, transport.Method);
+        Assert.Equal(HttpMethod.Get, transport.Method);
         Assert.Equal("https://api.example.test/tasks", transport.Uri!.AbsoluteUri);
-        Assert.Equal("SampleClient", transport.Source);
-        using JsonDocument body = JsonDocument.Parse(transport.Body!);
-        Assert.Equal(42, body.RootElement.GetProperty("taskId").GetInt32());
+        Assert.False(transport.HasContent);
+        Assert.False(transport.HasHeaders);
         Assert.InRange(result.GetRawText().Length, 1, 4000);
         Assert.Equal(1, transport.Calls);
     }
@@ -31,18 +30,24 @@ public sealed class HttpRequestJobHandlerTests
     [Theory]
     [InlineData(null)]
     [InlineData(" ")]
-    [InlineData("post")]
-    public async Task Missing_or_lowercase_method_uses_post(string? method)
+    [InlineData("GET ")]
+    [InlineData("get")]
+    [InlineData("POST")]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    [InlineData("DELETE")]
+    [InlineData("TRACE")]
+    public async Task Requests_without_an_explicit_get_fail_before_sending(string? method)
     {
         using StubHttpHandler transport = new(HttpStatusCode.OK);
         using HttpClient http = new(transport);
-        await Handler(http).HandleAsync(new("https://API.EXAMPLE.TEST/tasks", method));
-        Assert.Equal(HttpMethod.Post, transport.Method);
-        Assert.Equal(1, transport.Calls);
+        NonRetryableJobException error = await Assert.ThrowsAsync<NonRetryableJobException>(
+            () => Handler(http).HandleAsync(new("https://api.example.test/tasks", method)));
+        Assert.Contains("explicit GET", error.Message);
+        Assert.Equal(0, transport.Calls);
     }
 
     [Theory]
-    [InlineData("https://api.example.test/tasks", "TRACE", "not supported")]
     [InlineData("https://internal.example.test/tasks", "GET", "not allowed")]
     [InlineData("https://api.example.test.evil.test/tasks", "GET", "not allowed")]
     [InlineData("http://api.example.test/tasks", "GET", "not allowed")]
@@ -63,22 +68,34 @@ public sealed class HttpRequestJobHandlerTests
     }
 
     [Theory]
-    [InlineData("Host", "another.test")]
-    [InlineData("Content-Length", "5")]
-    [InlineData("Connection", "close")]
-    [InlineData("Transfer-Encoding", "chunked")]
-    [InlineData("Authorization", "Bearer example")]
-    [InlineData("Cookie", "session=example")]
-    [InlineData("Proxy-Authorization", "Basic example")]
-    [InlineData("Invalid Header", "value")]
-    [InlineData("X-Test", "value\r\ninjected: value")]
-    [InlineData("X-Test", null)]
-    public async Task Invalid_headers_fail_before_sending(string name, string? value)
+    [InlineData("""{"url":"https://api.example.test/tasks","method":"GET","extra":true}""")]
+    [InlineData("""{"Url":"https://api.example.test/tasks","method":"GET"}""")]
+    [InlineData("""{"url":"https://api.example.test/tasks","method":"POST","method":"GET"}""")]
+    [InlineData("""{"url":"https://api.example.test/tasks","method":1}""")]
+    public async Task Invalid_payload_fields_fail_before_sending(string json)
     {
         using StubHttpHandler transport = new(HttpStatusCode.OK);
         using HttpClient http = new(transport);
-        await Assert.ThrowsAsync<NonRetryableJobException>(() => Handler(http).HandleAsync(new("https://api.example.test/tasks", Headers: new Dictionary<string, string?> { [name] = value })));
+        using JsonDocument payload = JsonDocument.Parse(json);
+        IJobHandler<JsonElement> handler = Handler(http);
+        await Assert.ThrowsAsync<InvalidJobPayloadException>(async () => await handler.HandleAsync(payload.RootElement));
         Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
+    public async Task Get_url_is_bounded_before_sending()
+    {
+        const string prefix = "https://api.example.test/";
+        string maximum = prefix + new string('x', 2048 - prefix.Length);
+        using StubHttpHandler transport = new(HttpStatusCode.OK);
+        using HttpClient http = new(transport);
+        HttpRequestJobHandler handler = Handler(http);
+        NonRetryableJobException error = await Assert.ThrowsAsync<NonRetryableJobException>(() => handler.HandleAsync(new(maximum + "x", "GET")));
+        Assert.Contains("2048", error.Message);
+        Assert.Equal(0, transport.Calls);
+
+        await handler.HandleAsync(new(maximum, "GET"));
+        Assert.Equal(1, transport.Calls);
     }
 
     [Theory]
@@ -153,7 +170,7 @@ public sealed class HttpRequestJobHandlerTests
             }
         };
         using HttpClient http = new(transport);
-        Task<JsonElement?> request = Handler(http).HandleAsync(new("https://api.example.test/tasks"), cancellation.Token);
+        Task<JsonElement?> request = Handler(http).HandleAsync(new("https://api.example.test/tasks", "GET"), cancellation.Token);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
@@ -167,8 +184,8 @@ public sealed class HttpRequestJobHandlerTests
         public int Calls;
         public HttpMethod? Method;
         public Uri? Uri;
-        public string? Body;
-        public string? Source;
+        public bool HasContent;
+        public bool HasHeaders;
         public Func<CancellationToken, Task<HttpResponseMessage>>? SendResponse;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -176,8 +193,8 @@ public sealed class HttpRequestJobHandlerTests
             Calls++;
             Method = request.Method;
             Uri = request.RequestUri;
-            Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-            Source = request.Headers.TryGetValues("X-Source", out IEnumerable<string>? values) ? values.Single() : null;
+            HasContent = request.Content is not null;
+            HasHeaders = request.Headers.Any();
             return SendResponse is null ? new(status) : await SendResponse(cancellationToken);
         }
     }

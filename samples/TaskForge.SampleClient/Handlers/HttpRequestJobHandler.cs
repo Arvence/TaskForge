@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text;
 using System.Text.Json;
 
 using Microsoft.Extensions.Options;
@@ -8,15 +7,14 @@ using TaskForge.SDK.Handlers;
 
 namespace TaskForge.SampleClient.Handlers;
 
-public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRequestJobOptions> options) : IJobHandler<HttpRequestPayload>
+public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRequestJobOptions> options) : IJobHandler<HttpRequestPayload>, IJobHandler<JsonElement>
 {
+    private const int MaxUrlLength = 2048;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private static readonly HashSet<string> AllowedMethods = new(StringComparer.OrdinalIgnoreCase) { "DELETE", "GET", "PATCH", "POST", "PUT" };
-    private static readonly HashSet<string> RestrictedHeaders = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Authorization", "Connection", "Content-Length", "Cookie", "Host", "Proxy-Authorization", "Transfer-Encoding"
-    };
     private readonly string? _allowedOrigin = ReadOrigin(options.Value.AllowedOrigin);
+
+    Task<JsonElement?> IJobHandler<JsonElement>.HandleAsync(JsonElement payload, CancellationToken cancellationToken) =>
+        HandleAsync(SamplePayload.Bind<HttpRequestPayload>(payload, "http-request"), cancellationToken);
 
     public async Task<JsonElement?> HandleAsync(HttpRequestPayload payload, CancellationToken cancellationToken = default)
     {
@@ -45,6 +43,21 @@ public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRe
 
     private HttpRequestMessage CreateRequest(HttpRequestPayload payload)
     {
+        if (payload.Method != "GET")
+        {
+            throw new NonRetryableJobException("HTTP jobs require an explicit GET method.");
+        }
+
+        if (payload.Body is { ValueKind: not JsonValueKind.Null } || payload.Headers is not null)
+        {
+            throw new NonRetryableJobException("GET jobs must omit the body and headers or set them to null.");
+        }
+
+        if (payload.Url is { Length: > MaxUrlLength })
+        {
+            throw new NonRetryableJobException($"The HTTP URL must contain at most {MaxUrlLength} characters.");
+        }
+
         if (!Uri.TryCreate(payload.Url, UriKind.Absolute, out Uri? uri) || uri.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(uri.UserInfo))
         {
             throw new NonRetryableJobException("URL must be an absolute HTTP or HTTPS URL without user information.");
@@ -56,46 +69,7 @@ public sealed class HttpRequestJobHandler(HttpClient httpClient, IOptions<HttpRe
             throw new NonRetryableJobException("The HTTP origin is not allowed or the URL contains a query or fragment.");
         }
 
-        string method = string.IsNullOrWhiteSpace(payload.Method) ? "POST" : payload.Method.Trim().ToUpperInvariant();
-        if (!AllowedMethods.Contains(method))
-        {
-            throw new NonRetryableJobException($"HTTP method '{method}' is not supported.");
-        }
-
-        if (method == "GET" && (payload.Body is { ValueKind: not JsonValueKind.Null } || payload.Headers is not null))
-        {
-            throw new NonRetryableJobException("GET jobs must omit the body and headers or set them to null.");
-        }
-
-        HttpRequestMessage request = new(new HttpMethod(method), uri);
-        try
-        {
-            if (payload.Body is { ValueKind: not JsonValueKind.Null })
-            {
-                request.Content = new StringContent(payload.Body.Value.GetRawText(), Encoding.UTF8, "application/json");
-            }
-
-            foreach ((string name, string? value) in payload.Headers ?? new Dictionary<string, string?>())
-            {
-                if (string.IsNullOrWhiteSpace(name) || value is null || RestrictedHeaders.Contains(name) || value.Contains('\r') || value.Contains('\n'))
-                {
-                    throw new NonRetryableJobException($"HTTP header '{name}' is not allowed.");
-                }
-
-                if (!request.Headers.TryAddWithoutValidation(name, value)
-                    && (request.Content is null || !request.Content.Headers.TryAddWithoutValidation(name, value)))
-                {
-                    throw new NonRetryableJobException($"HTTP header '{name}' is invalid for this request.");
-                }
-            }
-
-            return request;
-        }
-        catch
-        {
-            request.Dispose();
-            throw;
-        }
+        return new(HttpMethod.Get, uri);
     }
 
     private static string? ReadOrigin(string? value)

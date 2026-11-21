@@ -7,8 +7,11 @@ using TaskForge.SDK.Handlers;
 
 namespace TaskForge.SampleClient.Handlers;
 
-public sealed class ReportExecutionHandler(GenerateReportJobHandler report, JobExecutionContext context, ILogger<ReportExecutionHandler> logger) : IJobHandler<GenerateReportPayload>
+public sealed class ReportExecutionHandler(GenerateReportJobHandler report, JobExecutionContext context, ILogger<ReportExecutionHandler> logger) : IJobHandler<GenerateReportPayload>, IJobHandler<JsonElement>
 {
+    Task<JsonElement?> IJobHandler<JsonElement>.HandleAsync(JsonElement payload, CancellationToken cancellationToken) =>
+        HandleAsync(SamplePayload.Bind<GenerateReportPayload>(payload, "generate-report"), cancellationToken);
+
     public Task<JsonElement?> HandleAsync(GenerateReportPayload payload, CancellationToken cancellationToken = default)
     {
         logger.LogInformation("Generating report for application {ApplicationId}, job {JobId}, attempt {AttemptNumber} ({AttemptId}), worker {WorkerId}.",

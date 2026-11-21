@@ -1,11 +1,13 @@
 using System.Globalization;
 using System.Text.Json;
 
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 using TaskForge.SampleClient;
 using TaskForge.SampleClient.Handlers;
 using TaskForge.SDK.Handlers;
+using TaskForge.SDK.Jobs;
 
 namespace TaskForge.UnitTests.SampleClient;
 
@@ -75,7 +77,10 @@ public sealed class GenerateReportJobHandlerTests
     [InlineData("[]")]
     [InlineData("""{"title":"Expenses","entries":[{"category":"Travel","amount":1e100}]}""")]
     [InlineData("""{"title":"Expenses","entries":[{"category":"Travel","amount":"1.00"}]}""")]
-    public async Task Invalid_payload_shapes_and_numeric_types_are_rejected_by_the_sdk(string json)
+    [InlineData("""{"title":"Expenses","entries":[{"category":"Travel","amount":1}],"extra":true}""")]
+    [InlineData("""{"title":"Expenses","entries":[{"category":"Travel","amount":1,"extra":true}]}""")]
+    [InlineData("""{"Title":"Expenses","entries":[{"category":"Travel","amount":1}]}""")]
+    public async Task Invalid_payload_shapes_and_fields_are_rejected_by_the_sample_worker(string json)
     {
         await Assert.ThrowsAsync<InvalidJobPayloadException>(() => ExecuteJsonAsync(json));
     }
@@ -146,9 +151,12 @@ public sealed class GenerateReportJobHandlerTests
     private static async Task<JsonElement?> ExecuteJsonAsync(string json)
     {
         ServiceCollection services = new();
-        services.AddTaskForgeHandlers(handlers => handlers.Register<GenerateReportPayload, GenerateReportJobHandler>("generate-report"));
+        services.AddLogging();
+        services.AddSampleHandlers(new ConfigurationBuilder().Build());
         await using ServiceProvider provider = services.BuildServiceProvider();
         using JsonDocument document = JsonDocument.Parse(json);
-        return await provider.GetRequiredService<JobHandlerRegistry>().ExecuteAsync("generate-report", document.RootElement);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        ExecutionAssignmentResponse assignment = new(Guid.NewGuid(), "a-project", Guid.NewGuid(), 1, "sample-worker", "generate-report", document.RootElement, 30, now, now.AddSeconds(30), now.AddSeconds(60));
+        return await provider.GetRequiredService<JobHandlerRegistry>().ExecuteAsync(assignment);
     }
 }

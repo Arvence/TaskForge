@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -21,8 +23,8 @@ public static class SampleHandlers
         services.AddHttpClient<HttpRequestJobHandler>(client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
         services.AddTaskForgeHandlers(handlers => handlers
-            .Register<GenerateReportPayload, ReportExecutionHandler>("generate-report")
-            .Register<HttpRequestPayload, HttpRequestJobHandler>("http-request"));
+            .Register<JsonElement, ReportExecutionHandler>("generate-report")
+            .Register<JsonElement, HttpRequestJobHandler>("http-request"));
         return services;
     }
 }
