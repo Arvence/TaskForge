@@ -4,10 +4,15 @@ namespace TaskForge.SDK.Handlers;
 
 public sealed class JobHandlerRegistryBuilder
 {
-    private readonly Dictionary<string, JobHandlerAdapter> _handlers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, JobHandlerAdapter> _handlers;
+    private readonly bool _routeByOperation;
     private bool _frozen;
 
-    internal JobHandlerRegistryBuilder() { }
+    internal JobHandlerRegistryBuilder(bool routeByOperation)
+    {
+        _routeByOperation = routeByOperation;
+        _handlers = new(routeByOperation ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+    }
 
     public JobHandlerRegistryBuilder Register<TPayload, THandler>(string jobType) where TPayload : notnull where THandler : class, IJobHandler<TPayload>
     {
@@ -17,11 +22,7 @@ public sealed class JobHandlerRegistryBuilder
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(jobType);
-        string name = jobType.Trim();
-        if (name.Length > 100)
-        {
-            throw new ArgumentException("Job type cannot exceed 100 characters.", nameof(jobType));
-        }
+        string name = _routeByOperation ? jobType : NormalizeJobType(jobType);
 
         if (typeof(THandler).IsAbstract)
         {
@@ -30,7 +31,9 @@ public sealed class JobHandlerRegistryBuilder
 
         if (!_handlers.TryAdd(name, new JobHandlerAdapter<TPayload, THandler>(name)))
         {
-            throw new InvalidOperationException($"Job type '{name}' already has a handler mapping. Type matching is case-insensitive.");
+            throw new InvalidOperationException(_routeByOperation
+                ? $"Operation '{name}' already has a handler mapping."
+                : $"Job type '{name}' already has a handler mapping. Type matching is case-insensitive.");
         }
 
         return this;
@@ -39,6 +42,18 @@ public sealed class JobHandlerRegistryBuilder
     internal FrozenDictionary<string, JobHandlerAdapter> Freeze()
     {
         _frozen = true;
-        return _handlers.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+        return _handlers.ToFrozenDictionary(_handlers.Comparer);
+    }
+
+    internal static string NormalizeJobType(string jobType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobType);
+        string name = jobType.Trim();
+        if (name.Length > 100)
+        {
+            throw new ArgumentException("Job type cannot exceed 100 characters.", nameof(jobType));
+        }
+
+        return name;
     }
 }

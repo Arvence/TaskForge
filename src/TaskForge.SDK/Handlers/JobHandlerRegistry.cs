@@ -12,12 +12,17 @@ public sealed class JobHandlerRegistry
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly FrozenDictionary<string, JobHandlerAdapter> _handlers;
+    private readonly Func<JsonElement, (string Operation, JsonElement Parameters)>? _selectOperation;
+    private readonly JsonSerializerOptions? _parameterOptions;
 
-    internal JobHandlerRegistry(IServiceScopeFactory scopeFactory, FrozenDictionary<string, JobHandlerAdapter> handlers)
+    internal JobHandlerRegistry(IServiceScopeFactory scopeFactory, FrozenDictionary<string, JobHandlerAdapter> handlers, string[]? supportedTypes, Func<JsonElement, (string Operation, JsonElement Parameters)>? selectOperation, JsonSerializerOptions? parameterOptions)
     {
         _scopeFactory = scopeFactory;
         _handlers = handlers;
-        RegisteredTypes = Array.AsReadOnly(handlers.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray());
+        _selectOperation = selectOperation;
+        _parameterOptions = parameterOptions;
+        IEnumerable<string> types = handlers.Count == 0 ? [] : supportedTypes ?? (IEnumerable<string>)handlers.Keys;
+        RegisteredTypes = Array.AsReadOnly(types.Order(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
     public IReadOnlyList<string> RegisteredTypes { get; }
@@ -37,11 +42,23 @@ public sealed class JobHandlerRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(jobType);
         cancellationToken.ThrowIfCancellationRequested();
         string name = jobType.Trim();
-        if (!_handlers.TryGetValue(name, out JobHandlerAdapter? handler))
+        if (_selectOperation is not null)
         {
-            throw new JobHandlerNotFoundException(name);
+            if (!RegisteredTypes.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new JobHandlerNotFoundException(name);
+            }
+
+            (name, payload) = _selectOperation(payload);
         }
 
-        return handler.ExecuteAsync(_scopeFactory, payload, context, cancellationToken);
+        if (!_handlers.TryGetValue(name, out JobHandlerAdapter? handler))
+        {
+            throw _selectOperation is null
+                ? new JobHandlerNotFoundException(name)
+                : new NonRetryableJobException("The requested operation is not registered.");
+        }
+
+        return handler.ExecuteAsync(_scopeFactory, payload, context, cancellationToken, _parameterOptions);
     }
 }

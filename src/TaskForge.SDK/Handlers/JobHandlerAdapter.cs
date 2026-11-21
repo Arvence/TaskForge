@@ -15,24 +15,25 @@ internal abstract class JobHandlerAdapter
     };
 
     public abstract Type HandlerType { get; }
-    public abstract Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, JobExecutionContext? context, CancellationToken cancellationToken);
+    public abstract Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, JobExecutionContext? context, CancellationToken cancellationToken, JsonSerializerOptions? parameterOptions);
 }
 
 internal sealed class JobHandlerAdapter<TPayload, THandler>(string jobType) : JobHandlerAdapter where TPayload : notnull where THandler : class, IJobHandler<TPayload>
 {
     public override Type HandlerType => typeof(THandler);
 
-    public override async Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, JobExecutionContext? context, CancellationToken cancellationToken)
+    public override async Task<JsonElement?> ExecuteAsync(IServiceScopeFactory scopeFactory, JsonElement payload, JobExecutionContext? context, CancellationToken cancellationToken, JsonSerializerOptions? parameterOptions)
     {
         TPayload model;
         try
         {
-            if (payload.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            if (payload.ValueKind == JsonValueKind.Undefined ||
+                (payload.ValueKind == JsonValueKind.Null && typeof(TPayload) != typeof(JsonElement)))
             {
                 throw new JsonException("A non-null job payload is required.");
             }
 
-            model = payload.Deserialize<TPayload>(PayloadOptions) ?? throw new JsonException("A non-null job payload is required.");
+            model = payload.Deserialize<TPayload>(parameterOptions ?? PayloadOptions) ?? throw new JsonException("A non-null job payload is required.");
         }
         catch (JsonException exception)
         {

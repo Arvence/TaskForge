@@ -176,6 +176,16 @@ public sealed class JobHandlerRegistryTests
         await Assert.ThrowsAsync<InvalidJobPayloadException>(() => provider.GetRequiredService<JobHandlerRegistry>().ExecuteAsync("send-email", default));
     }
 
+    [Fact]
+    public async Task Raw_json_handlers_receive_an_explicit_null_payload()
+    {
+        ServiceCollection services = Services();
+        services.AddTaskForgeHandlers(handlers => handlers.Register<JsonElement, EchoHandler>("echo"));
+        await using ServiceProvider provider = Build(services);
+        JsonElement? result = await provider.GetRequiredService<JobHandlerRegistry>().ExecuteAsync("echo", JsonSerializer.SerializeToElement<object?>(null));
+        Assert.Equal(JsonValueKind.Null, result!.Value.ValueKind);
+    }
+
     [Theory]
     [InlineData(-1)]
     [InlineData(-2)]
@@ -317,6 +327,11 @@ public sealed class JobHandlerRegistryTests
     public sealed class CountHandler : IJobHandler<CountPayload>
     {
         public Task<JsonElement?> HandleAsync(CountPayload payload, CancellationToken cancellationToken = default) => Task.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(payload.Value * 2));
+    }
+
+    public sealed class EchoHandler : IJobHandler<JsonElement>
+    {
+        public Task<JsonElement?> HandleAsync(JsonElement payload, CancellationToken cancellationToken = default) => Task.FromResult<JsonElement?>(payload);
     }
 
     public sealed class ProbeState
