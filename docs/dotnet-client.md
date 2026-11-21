@@ -153,6 +153,39 @@ as `400`, fault the worker rather than being retried. Reports are held only in
 memory; after process loss, the server recovers unreported work. Transport backoff
 does not set a job's retry schedule or consume its retry budget.
 
+## CLI worker with registered operations
+
+An application can reference `TaskForge.Cli` and use its runner from trusted
+startup code. The CLI starts one SDK worker and registers only the operation
+handlers supplied by that application.
+
+```csharp
+using TaskForge.Cli;
+
+return await TaskForgeCli.RunAsync(args, operations =>
+    operations.Register<SumPayload, SumHandler>("calculate-total"));
+```
+
+Run the configured application with `run`. Set `TaskForge__BaseUrl`,
+`TaskForge__ApplicationId`, and `TaskForge__ApiKey` to its server settings. Set
+`TaskForge__Worker__SlotCount` to the maximum number of concurrent executions.
+The default is one slot. Each slot has its own worker ID and processes one
+assignment at a time.
+
+The CLI advertises `general` by default when it has registered operations.
+Pass `supportedTypes: ["general", "reports"]` to also advertise a custom type.
+Every assignment uses the exact `operation` string to select a handler and
+binds the remaining fields to that handler's input.
+
+```json
+{"operation":"calculate-total","values":[12,30]}
+```
+
+The server defaults an omitted HTTP job type to `general`. The SDK submit
+request takes an explicit type. Application credentials are sufficient to submit
+any supported job type, and workers validate their own operation parameters.
+SDK handlers that take a raw `JsonElement` can receive explicit JSON null.
+
 ## Sample client
 
 After the [Release build](../README.md#build-and-test), run these commands from
@@ -190,11 +223,11 @@ Titles allow 1–120 characters; reports accept 1–1,000 entries, nonblank cate
 of at most 80 characters, and nonnegative amounts with up to two decimal places
 and a maximum of 1,000,000,000,000. Reports exceeding the result limit are rejected.
 
-The HTTP command submits a GET job. The sample worker checks that the URL matches
-its configured scheme, host, and port before sending it. GET jobs must omit the
-body and headers or set them to null. The worker rejects URL credentials, queries,
-and fragments and disables redirects and automatic cookies. It reports the
-status code and reason phrase.
+The HTTP command submits a GET job. The sample worker requires an explicit
+`GET` method and a URL of at most 2,048 characters that matches its configured
+scheme, host, and port. Omit the body and headers or set them to null. The worker
+rejects URL credentials, queries, and fragments and disables redirects and
+automatic cookies. It reports the status code and reason phrase.
 
 The sample reads [clientsettings.json](../samples/TaskForge.SampleClient/clientsettings.json)
 beside its executable, then environment overrides:

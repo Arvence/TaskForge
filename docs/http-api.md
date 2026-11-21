@@ -39,8 +39,8 @@ capacity in clients.
 
 ## Submit work
 
-Send the application's bearer key with job requests. The server must have a
-[payload contract](payload-contracts.md) registered for the application and job type.
+Send the application's ID and bearer key with job requests. The API enforces
+[JSON validation and size limits](payload-contracts.md) before storing a job.
 
 Send this body to `POST /api/jobs` while the sample worker runs for `a-project`:
 
@@ -67,8 +67,8 @@ it does not mean a handler has run.
 | Field | Contract |
 | --- | --- |
 | `applicationId` | Required; 1–100 ASCII letters, digits, dots, underscores, or hyphens after trimming. Stored lowercase. |
-| `type` | Required nonblank name, at most 100 characters after trimming. Routing is case-insensitive. |
-| `payload` | Required JSON object that matches the configured contract. Unknown fields and invalid values are rejected before persistence. |
+| `type` | Defaults to `general` when omitted. Explicit values must be nonblank names of at most 100 characters after trimming. Routing is case-insensitive. |
+| `payload` | Required JSON value, including explicit `null`. At most 16 KiB in UTF-8, with no duplicate object keys. |
 | `priority` | `Low`, `Normal`, `High`, or `Critical`; defaults to `Normal`. |
 | `maxRetries` | 0–10 automatic retries after the initial attempt; defaults to 3. |
 | `timeoutSeconds` | 1–3,600 seconds per attempt, starting at acquisition; defaults to 30. |

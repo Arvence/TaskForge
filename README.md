@@ -22,9 +22,8 @@ running API/database; no SDK or sample worker is required for these tests.
    `./setup.ps1`. Confirm [readiness](http://localhost:8275/api/ready) returns `Ready`.
 2. In Postman, select **Import** and choose
    `postman/TaskForge.postman_collection.json` from your local checkout.
-3. Set the local `applicationId` and `apiKey` variables to a configured test
-   application. Use the `generate-report` declaration from the
-   [sample configuration](.taskforge-apps.env.example). Set the request
+3. Set the local `applicationId` and `apiKey` variables from your
+   [test application configuration](docs/payload-contracts.md). Set the request
    timeout to **30,000 ms** for the automatic retry scenario. Application Routing
    also needs `otherApplicationId` and `otherApiKey` for a second test application.
 4. Open **02 — Feature Tests**, choose one scenario folder, and select **Run folder**.
@@ -83,8 +82,8 @@ cd TaskForge
 
 Copy the [sample configuration](.taskforge-apps.env.example) to
 `.taskforge-apps.env` beside `compose.yaml` and replace the API key placeholder.
-See [application access and payload contracts](docs/payload-contracts.md) for the
-key requirements and how to register job types. Then run setup from the repository root:
+See [application access and payload validation](docs/payload-contracts.md) for
+the key requirements. Then run setup from the repository root:
 
 ```powershell
 ./setup.ps1

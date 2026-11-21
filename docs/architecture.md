@@ -133,10 +133,10 @@ has rejected its ownership, potentially overlapping a replacement attempt.
 
 ## Delivery and business idempotency
 
-The API identifies the application from its bearer key and validates new job
-payloads against its configured contracts before persistence. Workers still
+The API identifies the application from its bearer key and enforces JSON
+syntax, depth, duplicate-key, and size limits before persistence. Workers
 validate business rules and execute handlers locally. See
-[application access and payload contracts](payload-contracts.md).
+[application access and payload validation](payload-contracts.md).
 
 There are three distinct concerns:
 
