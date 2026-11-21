@@ -41,7 +41,6 @@ builder.Services.AddProblemDetails();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<JobAccess>();
-builder.Services.AddSingleton<IJobPayloadPolicy, JobPayloadPolicy>();
 builder.Services.AddScoped<SubmitJobValidator>();
 builder.Services.AddScoped<JobManager>();
 builder.Services.AddScoped<JobCancellationService>();
@@ -71,7 +70,6 @@ builder.Services.AddTaskForgeSqlServer(connectionString);
 var app = builder.Build();
 
 JobAccess jobAccess = app.Services.GetRequiredService<JobAccess>();
-_ = app.Services.GetRequiredService<IJobPayloadPolicy>();
 await app.Services.InitializeTaskForgeDatabaseAsync();
 
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
@@ -171,7 +169,7 @@ protectedJobs.MapPost("/api/jobs", async Task<IResult> (SubmitJobRequest request
     .ProducesProblem(StatusCodes.Status500InternalServerError)
     .WithTags("Jobs")
     .WithSummary("Submit a durable background job.")
-    .WithDescription("An optional scheduledAtUtc timestamp with an explicit UTC offset delays the first assignment. A job with a future schedule remains queued until it is eligible for acquisition.")
+    .WithDescription("Omit type to use general. Payload is required and accepts any valid JSON value without duplicate object keys, up to 16 KiB in UTF-8. An optional scheduledAtUtc timestamp with an explicit UTC offset delays the first assignment.")
     .Produces<JobResponse>(StatusCodes.Status201Created)
     .Produces<JobResponse>(StatusCodes.Status200OK)
     .ProducesValidationProblem()

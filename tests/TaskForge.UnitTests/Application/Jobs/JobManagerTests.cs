@@ -43,7 +43,7 @@ public sealed class JobManagerTests
         SubmitJobCommand command = new(
             "test-app",
             string.Empty,
-            "null",
+            string.Empty,
             JobPriority.Normal,
             MaxRetries: -1,
             TimeoutSeconds: 0);
@@ -63,6 +63,7 @@ public sealed class JobManagerTests
     [InlineData("unknown", "{\"value\":1}")]
     [InlineData("generate-report", "{\"entries\":[]}")]
     [InlineData("http-request", "42")]
+    [InlineData("general", "null")]
     public async Task Arbitrary_types_and_valid_json_are_persisted_without_handlers(string type, string payloadJson)
     {
         FakeJobRepository repository = new();
@@ -79,7 +80,6 @@ public sealed class JobManagerTests
 
     [Theory]
     [InlineData("")]
-    [InlineData("null")]
     [InlineData("{")]
     public async Task Missing_or_invalid_payload_is_rejected(string payloadJson)
     {

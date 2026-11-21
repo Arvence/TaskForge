@@ -1,6 +1,5 @@
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
-using System.Text.Json;
 
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -8,11 +7,8 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using TaskForge.Api.Jobs;
-using TaskForge.Application.Jobs.Validation;
 using TaskForge.Domain.Jobs;
 
 namespace TaskForge.IntegrationTests;
@@ -28,9 +24,6 @@ internal sealed class LifecycleApplicationFactory : WebApplicationFactory<Progra
         {
             builder.UseSetting($"JobAccess:Applications:{applicationId}:ApiKey", key);
         }
-
-        builder.ConfigureTestServices(services =>
-            services.Replace(ServiceDescriptor.Singleton<IJobPayloadPolicy, TestPayloadPolicy>()));
     }
 
     protected override void ConfigureClient(HttpClient client)
@@ -59,10 +52,5 @@ internal sealed class LifecycleApplicationFactory : WebApplicationFactory<Progra
         app.UseRouting();
         app.Use(new JobAccess(configuration).AuthorizeAsync);
         return app.MapGroup(string.Empty).WithMetadata(new RequiresApplicationKey());
-    }
-
-    private sealed class TestPayloadPolicy : IJobPayloadPolicy
-    {
-        public string? Validate(string applicationId, string jobType, JsonElement payload, int payloadBytes) => null;
     }
 }

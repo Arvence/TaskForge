@@ -20,6 +20,8 @@ public sealed class OpenApiContractTests(SqlServerFixture fixture) : SqlServerTe
         JsonElement submit = paths.GetProperty("/api/jobs").GetProperty("post");
         Assert.True(submit.GetProperty("security")[0].TryGetProperty("applicationKey", out _));
         Assert.True(submit.GetProperty("responses").TryGetProperty("401", out _));
+        JsonElement type = document.GetProperty("components").GetProperty("schemas").GetProperty("SubmitJobRequest").GetProperty("properties").GetProperty("type");
+        Assert.Equal("general", type.GetProperty("default").GetString());
         Assert.False(paths.GetProperty("/api/health").GetProperty("get").TryGetProperty("security", out _));
         AssertResponse(paths, "/api/health", "get", "200", "HealthResponse");
         AssertResponse(paths, "/api/ready", "get", "200", "ReadinessResponse");

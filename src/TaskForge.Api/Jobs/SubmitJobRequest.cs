@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -8,8 +9,11 @@ namespace TaskForge.Api.Jobs;
 
 public sealed record SubmitJobRequest
 {
+    private const string DefaultType = "general";
+
     public string ApplicationId { get; init; } = string.Empty;
-    public string Type { get; init; } = string.Empty;
+    [DefaultValue(DefaultType)]
+    public string Type { get; init; } = DefaultType;
     public JsonElement Payload { get; init; }
     public JobPriority Priority { get; init; } = JobPriority.Normal;
     public int MaxRetries { get; init; } = 3;

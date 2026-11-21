@@ -161,7 +161,7 @@ public sealed class ApiContractTests(SqlServerFixture fixture) : SqlServerTest(f
         await using WebApplicationFactory<Program> factory = CreateFactory();
         using HttpClient client = factory.CreateClient();
 
-        using HttpResponseMessage invalid = await client.PostAsJsonAsync("/api/jobs", new { payload = new { url = "http://localhost/contract-test" } });
+        using HttpResponseMessage invalid = await client.PostAsJsonAsync("/api/jobs", new { applicationId = "test-app", type = (string?)null, payload = new { value = 1 } });
 
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
         Assert.Equal("application/problem+json", invalid.Content.Headers.ContentType?.MediaType);
