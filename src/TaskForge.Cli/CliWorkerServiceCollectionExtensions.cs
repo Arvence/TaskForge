@@ -17,7 +17,14 @@ public static class CliWorkerServiceCollectionExtensions
 
         IConfigurationSection settings = configuration.GetSection("TaskForge");
         services.AddTaskForgeHandlers(configureOperations ?? (_ => { }), supportedTypes ?? ["general"], JobRouter.SelectOperation, JobRouter.ParameterOptions);
+        services.AddTaskForgeCliClient(configuration);
+        services.AddTaskForgeWorker(new() { SlotCount = settings.GetValue("Worker:SlotCount", 1) });
+        return services;
+    }
 
+    internal static void AddTaskForgeCliClient(this IServiceCollection services, IConfiguration configuration)
+    {
+        IConfigurationSection settings = configuration.GetSection("TaskForge");
         services.TryAddSingleton(_ => new HttpClient { Timeout = Timeout.InfiniteTimeSpan });
         services.AddSingleton(provider => new TaskForgeClient(provider.GetRequiredService<HttpClient>(), new()
         {
@@ -25,12 +32,10 @@ public static class CliWorkerServiceCollectionExtensions
             ApplicationId = RequiredSetting(settings, "ApplicationId"),
             ApiKey = RequiredSetting(settings, "ApiKey")
         }));
-        services.AddTaskForgeWorker(new() { SlotCount = settings.GetValue("Worker:SlotCount", 1) });
-        return services;
     }
 
     private static string RequiredSetting(IConfigurationSection settings, string name) =>
         settings[name] is { } value && !string.IsNullOrWhiteSpace(value)
             ? value
-            : throw new InvalidOperationException($"Configure {settings.Path}:{name} before running the worker.");
+            : throw new InvalidOperationException($"Configure {settings.Path}:{name} before using the CLI.");
 }

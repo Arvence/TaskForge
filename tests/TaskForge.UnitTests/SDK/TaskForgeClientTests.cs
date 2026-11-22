@@ -12,6 +12,35 @@ public sealed class TaskForgeClientTests
     private static readonly Guid JobId = Guid.Parse("a1111111-1111-1111-1111-111111111111");
     private static readonly Guid AttemptId = Guid.Parse("b2222222-2222-2222-2222-222222222222");
 
+    [Fact]
+    public async Task Payload_only_submissions_default_to_general()
+    {
+        using HttpClient http = new(new StubHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            Assert.Equal("general", body.RootElement.GetProperty("type").GetString());
+            Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("payload").ValueKind);
+            Assert.Equal("Normal", body.RootElement.GetProperty("priority").GetString());
+            Assert.Equal(3, body.RootElement.GetProperty("maxRetries").GetInt32());
+            Assert.Equal(30, body.RootElement.GetProperty("timeoutSeconds").GetInt32());
+            return Json(JobJson(), HttpStatusCode.Created);
+        }));
+
+        await Client(http).SubmitAsync(new(JsonSerializer.SerializeToElement<object?>(null)));
+    }
+
+    [Fact]
+    public void Explicit_type_requests_still_deserialize_with_the_existing_constructor()
+    {
+        SubmitJobRequest request = JsonSerializer.Deserialize<SubmitJobRequest>(
+            """{"type":"custom","payload":[1,2],"maxRetries":1}""", new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+        Assert.Equal("custom", request.Type);
+        Assert.Equal(2, request.Payload.GetArrayLength());
+        Assert.Equal(1, request.MaxRetries);
+        Assert.Equal(30, request.TimeoutSeconds);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Created)]
     [InlineData(HttpStatusCode.OK)]
