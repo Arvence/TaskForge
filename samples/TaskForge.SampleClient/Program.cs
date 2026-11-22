@@ -37,7 +37,7 @@ public static class Program
             args = args[..runAtIndex];
         }
 
-        if (args is not (["run"] or ["submit-report"] or ["submit-report", _] or ["submit-http", _]))
+        if (args is not (["run"] or ["run", "--general"] or ["submit-report"] or ["submit-report", _] or ["submit-http", _]))
         {
             PrintUsage();
             return 2;
@@ -47,6 +47,15 @@ public static class Program
         {
             HostApplicationBuilder builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { ContentRootPath = AppContext.BaseDirectory });
             builder.Configuration.AddJsonFile("clientsettings.json", optional: false).AddEnvironmentVariables();
+            if (args is ["run", "--general"])
+            {
+                builder.Services.AddSampleOperationWorker(builder.Configuration);
+                using IHost operationHost = builder.Build();
+                Console.WriteLine("Executing the generate-report and http-request operations for general jobs. Press Ctrl+C to stop.");
+                await operationHost.RunAsync();
+                return 0;
+            }
+
             using HttpClient http = new() { Timeout = Timeout.InfiniteTimeSpan };
             TaskForgeClient client = new(http, new()
             {
@@ -54,10 +63,10 @@ public static class Program
                 ApplicationId = builder.Configuration["TaskForge:ApplicationId"] ?? "a-project",
                 ApiKey = builder.Configuration["TaskForge:ApiKey"]
             });
-            builder.Services.AddSingleton(client);
-            builder.Services.AddSampleHandlers(builder.Configuration);
-            if (args[0] == "run")
+            if (args is ["run"])
             {
+                builder.Services.AddSingleton(client);
+                builder.Services.AddSampleHandlers(builder.Configuration);
                 builder.Services.AddTaskForgeWorker();
                 using IHost host = builder.Build();
                 Console.WriteLine($"Executing generate-report and http-request jobs for {client.ApplicationId}. Press Ctrl+C to stop.");
@@ -104,7 +113,8 @@ public static class Program
     private static void PrintUsage()
     {
         Console.WriteLine("TaskForge sample client");
-        Console.WriteLine("  run                         Run the external worker until Ctrl+C.");
+        Console.WriteLine("  run --general               Execute sample operations through the general job router.");
+        Console.WriteLine("  run                         Process existing jobs with explicit sample types.");
         Console.WriteLine("  submit-report [payload.json] Submit an expense report (built-in example by default).");
         Console.WriteLine("  submit-http <url>           Submit an HTTP GET for the sample worker's allowed origin.");
         Console.WriteLine("Append --run-at \"<ISO_8601_TIMESTAMP_WITH_OFFSET>\" to either submit command for one-time scheduling.");

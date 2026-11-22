@@ -1,0 +1,9 @@
+{
+  "operation": "generate-report",
+  "title": "September expenses",
+  "entries": [
+    { "category": "Travel", "amount": 125.50 },
+    { "category": "Supplies", "amount": 40.25 },
+    { "category": "Travel", "amount": 24.50 }
+  ]
+}
