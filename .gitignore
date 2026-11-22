@@ -61,4 +61,8 @@ nunit-*.xml
 
 # Local secrets
 .env
+.env.*
+!.env.example
 .taskforge-apps.env
+.taskforge-apps.env.*
+!.taskforge-apps.env.example
