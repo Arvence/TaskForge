@@ -78,10 +78,10 @@ The server runs in Docker. The sample worker runs on your host.
 ```powershell
 git clone https://github.com/Arvence/TaskForge.git
 cd TaskForge
+Copy-Item .taskforge-apps.env.example .taskforge-apps.env
 ```
 
-Copy the [sample configuration](.taskforge-apps.env.example) to
-`.taskforge-apps.env` beside `compose.yaml` and replace the API key placeholder.
+Replace the API key placeholder in `.taskforge-apps.env` with a unique key.
 See [application access and payload validation](docs/payload-contracts.md) for
 the key requirements. Then run setup from the repository root:
 
@@ -98,41 +98,46 @@ If Windows blocks the script, run
 `powershell -NoProfile -ExecutionPolicy Bypass -File ./setup.ps1`.
 For direct Compose setup without PowerShell, see [server configuration](docs/architecture.md#server-configuration).
 
-### Start the sample worker
+### Start the optional sample worker
 
 From the repository root, in the first terminal:
 
 ```powershell
 dotnet build TaskForge.sln --configuration Release
+$env:TaskForge__BaseUrl = 'http://localhost:8275'
 $env:TaskForge__ApplicationId = 'a-project'
 $env:TaskForge__ApiKey = '<SAMPLE_APPLICATION_API_KEY>'
-dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run
+$env:TaskForge__Worker__SlotCount = '5'
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run --general
 ```
 
-Leave this terminal open. The sample handles `generate-report` and `http-request`
-jobs. Without a matching worker, new jobs remain queued.
+Leave this terminal open. The sample worker uses up to five slots for `general`
+jobs and selects the report or HTTP GET handler from `payload.operation`. Jobs
+wait for a worker that advertises their type.
 
 ### Submit a report and inspect the result
 
 In a second PowerShell terminal, from the repository root:
 
 ```powershell
+$env:TaskForge__BaseUrl = 'http://localhost:8275'
 $env:TaskForge__ApplicationId = 'a-project'
 $env:TaskForge__ApiKey = '<SAMPLE_APPLICATION_API_KEY>'
-$submitted = dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report | ConvertFrom-Json
+$submitted = dotnet run --project src/TaskForge.Cli --configuration Release --no-build -- submit samples/TaskForge.SampleClient/payloads/report.json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Report submission failed.' }
 
-$api = 'http://localhost:8275'
+$api = $env:TaskForge__BaseUrl
+$headers = @{ Authorization = "Bearer $env:TaskForge__ApiKey" }
 $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
 do {
-    $job = Invoke-RestMethod "$api/api/jobs/$($submitted.id)"
+    $job = Invoke-RestMethod "$api/api/jobs/$($submitted.id)" -Headers $headers
     if ($job.status -in @('Completed', 'DeadLettered', 'Cancelled')) { break }
     Start-Sleep -Milliseconds 250
 } while ([DateTimeOffset]::UtcNow -lt $deadline)
 if ($job.status -ne 'Completed') { throw "Expected Completed; got $($job.status)." }
 
 $job.result | ConvertTo-Json -Depth 5
-$attempts = Invoke-RestMethod "$api/api/jobs/$($job.id)/attempts"
+$attempts = Invoke-RestMethod "$api/api/jobs/$($job.id)/attempts" -Headers $headers
 $attempts | Format-Table attemptNumber, outcome, workerId, durationMilliseconds -AutoSize
 ```
 

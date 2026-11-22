@@ -11,8 +11,8 @@ three pieces that can be used together or separately:
 | `JobHandlerRegistry` | Local type-to-handler mappings and a separate dependency-injection scope per invocation. |
 | `TaskForgeWorker` | Hosted execution slots, cancellation monitoring, deadlines, and bounded outcome-delivery retries. |
 
-Reference the SDK project from this repository. Console commands belong to the
-sample application; the SDK does not install a CLI.
+Reference the SDK project from this repository. Run submission commands through
+the separate `TaskForge.Cli` project.
 
 ## Register a worker
 
@@ -69,8 +69,9 @@ public sealed class SumHandler(JobExecutionContext context) : IJobHandler<SumPay
 }
 ```
 
-Register `calculate-total` with the `calculation` profile for `example-app` and set
-`TaskForge__ApiKey` to its application key. See [server configuration](payload-contracts.md).
+Provision `example-app` on the server and set `TaskForge__ApiKey` to its
+application key. The worker already registers `calculate-total` locally. See
+[application configuration](payload-contracts.md).
 Run `dotnet run --project artifacts/ExampleWorker`. It accepts `calculate-total`
 jobs for `example-app` with payloads such as `{"values":[1,2,3]}`. Job submission
 belongs in your application, separately from worker startup.
@@ -116,6 +117,9 @@ For submission retries, pass a stable `idempotencyKey` to `SubmitAsync` and reta
 the original request. The SDK also exposes `WaitAsync`, `CompleteAsync`, and
 `FailAsync` for applications that manage their own execution loop. Listing,
 statistics, and manual replay use the [HTTP API](http-api.md#endpoints).
+
+Construct `new SubmitJobRequest(payload)` to use `general`. Pass the type
+explicitly when targeting a worker that advertises a custom job type.
 
 `TaskForgeClient` does not retry individual HTTP calls automatically. It throws
 `TaskForgeApiException` for error responses, exposing `StatusCode`, `Error`, and
@@ -181,49 +185,58 @@ binds the remaining fields to that handler's input.
 {"operation":"calculate-total","values":[12,30]}
 ```
 
-The server defaults an omitted HTTP job type to `general`. The SDK submit
-request takes an explicit type. Application credentials are sufficient to submit
-any supported job type, and workers validate their own operation parameters.
-SDK handlers that take a raw `JsonElement` can receive explicit JSON null.
+## Submit with the CLI
+
+From the repository root, set `TaskForge__ApplicationId` and `TaskForge__ApiKey`
+for the target application, then pass a file containing a JSON payload:
+
+```powershell
+dotnet run --project src/TaskForge.Cli --configuration Release --no-build -- submit samples/TaskForge.SampleClient/payloads/report.json
+```
+
+The command submits a `general` job and prints a JSON object containing
+`id`, `applicationId`, `type`, `status`, and `scheduledAtUtc`. The file can
+contain any server-supported JSON value, including explicit `null`. Workers
+validate their own inputs. The CLI operation router expects an object with an
+`operation` string, and a custom SDK handler can take a raw `JsonElement`.
+Set `TaskForge__BaseUrl` when the API runs at an address other than
+`http://localhost:8275`.
+
+| Option | Behavior |
+| --- | --- |
+| `--type <name>` | Submit an explicit job type. Defaults to `general`. |
+| `--priority <Low\|Normal\|High\|Critical>` | Select priority. Defaults to `Normal`. |
+| `--max-retries <count>` | Set the maximum automatic retries. Defaults to 3. |
+| `--timeout-seconds <seconds>` | Set the execution timeout per attempt. Defaults to 30. |
+| `--run-at <ISO_8601_WITH_OFFSET>` | Make the job eligible at the given time. Supply `Z` or an explicit UTC offset. |
+| `--idempotency-key <key>` | Reuse a job when retrying the same submission. |
 
 ## Sample client
 
-After the [Release build](../README.md#build-and-test), run these commands from
-the repository root. `run` stays active; each submission command prints a job ID
-and exits, so use a second terminal for submission.
+After the [Release build](../README.md#build-and-test), configure the application
+credentials in both terminals. The optional sample worker registers two
+operations under `general`. Start it from the repository root:
 
 ```powershell
-dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- help
-dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run
+dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- run --general
 ```
+
+In the second terminal, submit either sample payload:
 
 ```powershell
-dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report
-dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-http http://localhost:8275/api/health
+dotnet run --project src/TaskForge.Cli --configuration Release --no-build -- submit samples/TaskForge.SampleClient/payloads/report.json
+dotnet run --project src/TaskForge.Cli --configuration Release --no-build -- submit samples/TaskForge.SampleClient/payloads/http-get.json
 ```
 
-To submit your own report, save this as `report.json` in your working directory:
-
-```json
-{
-  "title": "Office expenses",
-  "entries": [
-    { "category": "Supplies", "amount": 12.50 },
-    { "category": "Travel", "amount": 25.00 }
-  ]
-}
-```
-
-```powershell
-dotnet run --project samples/TaskForge.SampleClient --configuration Release --no-build -- submit-report report.json
-```
+Copy and edit the report payload to try your own entries. Read the persisted
+result and attempt history using the [local quickstart](../README.md#submit-a-report-and-inspect-the-result).
 
 Reports are deterministic: they group entries by category and calculate totals.
 Titles allow 1–120 characters; reports accept 1–1,000 entries, nonblank categories
 of at most 80 characters, and nonnegative amounts with up to two decimal places
 and a maximum of 1,000,000,000,000. Reports exceeding the result limit are rejected.
 
-The HTTP command submits a GET job. The sample worker requires an explicit
+For the `http-request` operation, the sample worker requires an explicit
 `GET` method and a URL of at most 2,048 characters that matches its configured
 scheme, host, and port. Omit the body and headers or set them to null. The worker
 rejects URL credentials, queries, and fragments and disables redirects and
@@ -237,16 +250,20 @@ beside its executable, then environment overrides:
 | `TaskForge__BaseUrl` | `http://localhost:8275` |
 | `TaskForge__ApplicationId` | `a-project` |
 | `TaskForge__ApiKey` | Required for job operations. Use the configured application key. |
+| `TaskForge__Worker__SlotCount` | `1` for `run --general`. |
 | `HttpRequestJobs__AllowedOrigin` | `http://localhost:8275` |
 
 Set `HttpRequestJobs__AllowedOrigin` in the worker terminal for a different
 destination. Use just the scheme, host, and port. Replace any older
 `HttpRequestJobs__AllowedHosts__*` settings when upgrading.
 
-For another application, set `$env:TaskForge__ApplicationId = 'b-project'` in both
-its worker and submission terminals. To add capacity for one application, start
-another worker with the same application ID. Separate applications can use the
-same type name with their own implementations.
+To process existing jobs whose stored types are `generate-report` or
+`http-request`, start the sample with `run`. The legacy `submit-report`
+and `submit-http` commands use those explicit types.
+
+For another application, set `TaskForge__ApplicationId` and `TaskForge__ApiKey`
+in both its worker and submission terminals. Set `TaskForge__Worker__SlotCount`
+to run more jobs concurrently in the same `run --general` process.
 
 ## Debugging console
 

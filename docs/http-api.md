@@ -42,13 +42,13 @@ capacity in clients.
 Send the application's ID and bearer key with job requests. The API enforces
 [JSON validation and size limits](payload-contracts.md) before storing a job.
 
-Send this body to `POST /api/jobs` while the sample worker runs for `a-project`:
+Send this body to `POST /api/jobs` while the sample worker runs with `run --general` for `a-project`:
 
 ```json
 {
   "applicationId": "a-project",
-  "type": "generate-report",
   "payload": {
+    "operation": "generate-report",
     "title": "Expenses",
     "entries": [
       { "category": "Travel", "amount": 125.50 },
@@ -72,6 +72,7 @@ it does not mean a handler has run.
 | `priority` | `Low`, `Normal`, `High`, or `Critical`; defaults to `Normal`. |
 | `maxRetries` | 0–10 automatic retries after the initial attempt; defaults to 3. |
 | `timeoutSeconds` | 1–3,600 seconds per attempt, starting at acquisition; defaults to 30. |
+| `scheduledAtUtc` | Optional one-time eligibility timestamp in ISO 8601 with `Z` or an explicit UTC offset. The server stores it in UTC. Omit it for immediate eligibility. |
 
 An optional `Idempotency-Key` header accepts 1–100 nonblank characters after
 trimming. Keys are case-sensitive and scoped to an application. Reusing a key
@@ -87,7 +88,7 @@ Send a wait request from each available worker slot:
 {
   "applicationId": "a-project",
   "workerId": "report-worker-1",
-  "supportedTypes": ["generate-report"],
+  "supportedTypes": ["general"],
   "waitSeconds": 20
 }
 ```
@@ -176,8 +177,8 @@ bearer key. Job data remains readable while workers are offline.
 
 With the server running, execute this entire block in PowerShell. It needs no .NET
 SDK or sample worker: PowerShell itself acquires the job, computes the sum, and
-reports it. Configure a dedicated `http-example` application with the `calculation`
-profile registered for `calculate-total` before running it.
+reports it. Provision a dedicated `http-example` application and set
+`TaskForge__ApiKey` to its application key before running it.
 
 ```powershell
 $ErrorActionPreference = 'Stop'

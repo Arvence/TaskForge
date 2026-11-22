@@ -23,6 +23,8 @@ flowchart TB
         Application --> Domain
     end
     subgraph Clients[Independent clients]
+        CLI[TaskForge.Cli] --> SDK[TaskForge.SDK]
+        Sample[TaskForge.SampleClient] --> CLI
         Sample[TaskForge.SampleClient] --> SDK[TaskForge.SDK]
         Debug[TaskForge.Debugging]
     end
@@ -35,7 +37,8 @@ flowchart TB
 | `TaskForge.Domain` | Job and attempt state transitions. |
 | `TaskForge.Infrastructure` | EF Core mappings, SQL transactions, concurrency checks, and schema initialization. |
 | `TaskForge.SDK` | Independent HTTP client, local handler registry, and optional hosted worker. |
-| `TaskForge.SampleClient` | Report and HTTP handlers, plus application-owned submission commands. |
+| `TaskForge.Cli` | JSON file submission and dispatch for registered client operations. |
+| `TaskForge.SampleClient` | Optional report and HTTP handlers and sample payloads. |
 | `TaskForge.Debugging` | Read-only HTTP console with no project references. |
 
 The API hosts `JobMaintenanceService`, which expires deadlines and recovers leases.
