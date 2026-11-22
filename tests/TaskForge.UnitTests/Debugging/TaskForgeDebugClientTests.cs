@@ -90,6 +90,8 @@ public sealed class TaskForgeDebugClientTests
     [Theory]
     [InlineData("{\"title\":\"Database unavailable\",\"status\":503}", "Database unavailable")]
     [InlineData("Service unavailable", "Service unavailable")]
+    [InlineData("[\"Service unavailable\"]", "[\"Service unavailable\"]")]
+    [InlineData("{\"message\":503,\"title\":\"Service unavailable\"}", "Service unavailable")]
     public async Task GetStatisticsAsync_PreservesApiFailureStatusAndMessage(string body, string expectedMessage)
     {
         using HttpClient httpClient = CreateClient("/api/stats", body, HttpStatusCode.ServiceUnavailable);

@@ -70,14 +70,17 @@ internal sealed class TaskForgeDebugClient(HttpClient httpClient)
         {
             using JsonDocument document = JsonDocument.Parse(body);
             JsonElement root = document.RootElement;
-            if (root.TryGetProperty("message", out JsonElement message))
+            if (root.ValueKind == JsonValueKind.Object)
             {
-                return message.GetString() ?? body;
-            }
+                if (root.TryGetProperty("message", out JsonElement message) && message.ValueKind == JsonValueKind.String)
+                {
+                    return message.GetString()!;
+                }
 
-            if (root.TryGetProperty("title", out JsonElement title))
-            {
-                return title.GetString() ?? body;
+                if (root.TryGetProperty("title", out JsonElement title) && title.ValueKind == JsonValueKind.String)
+                {
+                    return title.GetString()!;
+                }
             }
         }
         catch (JsonException)
