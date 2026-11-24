@@ -152,7 +152,7 @@ named volume retains your jobs. Adding `--volumes` deletes that data.
 
 | Integration | What to use |
 | --- | --- |
-| .NET | [SDK and hosted worker](docs/dotnet-client.md): register local handlers and use `TaskForgeClient`. |
+| .NET | [Local NuGet package](#use-the-local-net-sdk-package) or [SDK project and hosted worker](docs/dotnet-client.md). |
 | Node.js, Python, or another language | [HTTP API](docs/http-api.md): submit, acquire, execute locally, and report. No callback endpoint is required. |
 | Postman | Import the [collection](postman/TaskForge.postman_collection.json) and follow the [tryout instructions](#try-taskforge-with-postman). |
 | Another API client | Import the running server's [OpenAPI document](http://localhost:8275/openapi/v1.json). |
@@ -161,6 +161,121 @@ named volume retains your jobs. Adding `--volumes` deletes that data.
 The application decides when to submit work. TaskForge schedules retries of
 submitted jobs; it does not schedule recurring application tasks. Workers can run
 inside a backend service or as separate processes.
+
+## Use the local .NET SDK package
+
+### Build the package
+
+Run from the TaskForge repository root with the .NET 10 SDK:
+
+```powershell
+dotnet pack src/TaskForge.SDK/TaskForge.SDK.csproj -c Release -o artifacts/nuget
+$feed = (Resolve-Path artifacts/nuget).Path
+```
+
+This creates `artifacts/nuget/TaskForge.SDK.2.0.0.nupkg` for `net10.0` using the
+version in `Directory.Build.props`. The output is ignored by Git. The package is
+for local installation and stays in the folder feed.
+
+### Install in another .NET 10 project
+
+In the same PowerShell session, switch to a directory outside the TaskForge
+repository. For a new consumer, create the project there:
+
+```powershell
+dotnet new console --framework net10.0 --no-restore
+```
+
+Create a `NuGet.Config` next to the consumer's project file. If the project
+already has one, merge these sources and mappings into it.
+
+```powershell
+$localSource = [System.Security.SecurityElement]::Escape($feed)
+@"
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="TaskForgeLocal" value="$localSource" />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+  </packageSources>
+  <packageSourceMapping>
+    <packageSource key="TaskForgeLocal">
+      <package pattern="TaskForge.SDK" />
+    </packageSource>
+    <packageSource key="nuget.org">
+      <package pattern="*" />
+    </packageSource>
+  </packageSourceMapping>
+</configuration>
+"@ | Set-Content -Encoding UTF8 NuGet.Config
+```
+
+Add the package reference and restore. The exact ID maps to the local folder,
+while NuGet.org supplies third-party dependencies. The restore uses a
+project-specific package cache under `obj`.
+
+```powershell
+dotnet package add TaskForge.SDK --version 2.0.0 --no-restore
+dotnet restore --configfile ./NuGet.Config --packages ./obj/nuget-packages
+dotnet build -c Release --no-restore
+```
+
+### Submit a job with the package
+
+For a smoke check, [start TaskForge](#start-the-server) and provision the sample
+application key. Replace the consumer's `Program.cs` with this example:
+
+```csharp
+using System.Text.Json;
+using TaskForge.SDK;
+using TaskForge.SDK.Jobs;
+
+using HttpClient http = new();
+TaskForgeClient client = new(http, new()
+{
+    BaseUrl = new Uri(Environment.GetEnvironmentVariable("TaskForge__BaseUrl") ?? "http://localhost:8275"),
+    ApplicationId = "a-project",
+    ApiKey = Environment.GetEnvironmentVariable("TaskForge__ApiKey")
+});
+
+JsonElement payload = JsonSerializer.SerializeToElement(new
+{
+    operation = "generate-report",
+    title = "Office expenses",
+    entries = new[] { new { category = "Supplies", amount = 12.50m } }
+});
+
+JobResponse job = await client.SubmitAsync(new SubmitJobRequest(payload));
+Console.WriteLine($"{job.Id} {job.Type} {job.Status}");
+```
+
+```powershell
+$env:TaskForge__ApiKey = '<SAMPLE_APPLICATION_API_KEY>'
+dotnet run -c Release --no-restore
+```
+
+Expect a job ID and `general Queued`. Submission alone requires the API and
+database. Start the [sample worker](#start-the-optional-sample-worker) to execute
+the report.
+
+### Install an updated local build
+
+Use a new package version so NuGet picks up the rebuilt SDK. For example, from the
+TaskForge root:
+
+```powershell
+dotnet pack src/TaskForge.SDK/TaskForge.SDK.csproj -c Release -o artifacts/nuget -p:PackageVersion=2.0.1-local.1
+```
+
+From the consumer directory, with the same `NuGet.Config`:
+
+```powershell
+dotnet package add TaskForge.SDK --version 2.0.1-local.1 --no-restore
+dotnet restore --configfile ./NuGet.Config --packages ./obj/nuget-packages
+dotnet build -c Release --no-restore
+```
+
+Use the next version, such as `2.0.1-local.2`, on subsequent rebuilds.
 
 ## Execution and deployment boundaries
 
